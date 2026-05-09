@@ -147,6 +147,7 @@ class TestBuildChatModel:
         from beeai_framework.adapters.openai.backend.chat import OpenAIChatModel
 
         assert isinstance(model, OpenAIChatModel)
+        assert model.tool_choice_support == {"auto", "single", "none"}
 
     def test_nvidia_uses_openai_compat_adapter(self):
         s = LLMSettings(
@@ -159,6 +160,7 @@ class TestBuildChatModel:
         from beeai_framework.adapters.openai.backend.chat import OpenAIChatModel
 
         assert isinstance(model, OpenAIChatModel)
+        assert model.tool_choice_support == {"auto", "single", "none"}
 
     def test_chutes_uses_openai_compat_adapter(self):
         s = LLMSettings(
@@ -171,6 +173,7 @@ class TestBuildChatModel:
         from beeai_framework.adapters.openai.backend.chat import OpenAIChatModel
 
         assert isinstance(model, OpenAIChatModel)
+        assert model.tool_choice_support == {"auto", "single", "none"}
 
     @pytest.mark.parametrize(
         "provider,key_var",
