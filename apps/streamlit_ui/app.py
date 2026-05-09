@@ -178,7 +178,13 @@ def _append_chat_log(
     response: str,
     trajectory: list[str],
     error: str | None = None,
+    events: list[dict] | None = None,
 ) -> None:
+    """Append a turn record to the JSONL chat log.
+
+    `events` is a structured trace of everything that happened during the
+    turn (LLM reasoning text, tool calls, tool outputs) for debug / replay.
+    """
     CHAT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -187,6 +193,7 @@ def _append_chat_log(
         "user_input": user_input,
         "assistant_response": response,
         "trajectory": trajectory,
+        "events": events or [],
         "error": error,
     }
     with CHAT_LOG_PATH.open("a", encoding="utf-8") as f:
@@ -214,18 +221,50 @@ def _role_label(role: Role) -> str:
     return f"{cfg.primary.provider.value}:{cfg.primary.model_id}"
 
 
+def _extract_token_text(token_event_data: Any) -> str:
+    """Extract the delta text from a BeeAI ChatModelNewTokenEvent.
+
+    Each new_token event delivers a ChatModelOutput whose `output` list
+    contains a single AssistantMessage. The message's text content is the
+    delta token (not accumulated).
+    """
+    out = getattr(token_event_data, "value", None)
+    if out is None or not getattr(out, "output", None):
+        return ""
+    msgs = out.output
+    if not msgs:
+        return ""
+    msg = msgs[0]
+    if hasattr(msg, "get_text_content"):
+        try:
+            return msg.get_text_content() or ""
+        except Exception:
+            return ""
+    return str(msg)
+
+
 def stream_analysis(
     user_message: str,
     patient_handle: str | None,
     db_path: Path,
     state: dict,
 ) -> Any:
-    """Return a generator that streams tool-call lines then the final response.
+    """Generator for st.write_stream that streams LLM tokens + tool events live.
 
-    Populates `state` with 'response', 'trajectory', and 'error' when done.
-    Designed for use with st.write_stream().
+    Yields, in real time:
+    - LLM reasoning text (token by token from `new_token` emitter event)
+    - Tool call markers ("🔧 `tool_name`(...args)") on each tool start
+    - Tool output snippets on each tool success/error
+
+    Populates `state` with:
+    - 'response': final user-facing text
+    - 'trajectory': enforcer-recorded tool sequence
+    - 'events': structured list of every event in this turn (for JSONL log)
+    - 'error': exception string if the run failed
     """
     eq: _queue.Queue = _queue.Queue()
+    state.setdefault("events", [])
+    events: list[dict] = state["events"]
 
     async def _run() -> None:
         if patient_handle:
@@ -244,16 +283,71 @@ def stream_analysis(
         llm = build_chat_model_for_role(Role.ORCHESTRATOR)
         bundle = build_bundle()
 
-        # Intercept enforcer.record so every tool call streams to the queue
+        # Hook 1: enforcer record (existing behaviour) — also queue tool name
         _orig_record = bundle.enforcer.record
         def _streaming_record(tool_name: str) -> None:
             _orig_record(tool_name)
-            eq.put(("tool", tool_name))
+            eq.put(("tool_call", {"name": tool_name, "input": None}))
         bundle.enforcer.record = _streaming_record
+
+        # Hook 2: LLM token streaming
+        def _on_llm_event(data: Any, event: Any) -> None:
+            if getattr(event, "name", "") != "new_token":
+                return
+            chunk = _extract_token_text(data)
+            if chunk:
+                eq.put(("token", chunk))
+
+        try:
+            llm.emitter.match("*", _on_llm_event)
+        except Exception:
+            pass  # if emitter API differs, silently skip — tool streaming still works
 
         try:
             async with orchestrator_agent(bundle=bundle, llm=llm, patient_db_path=patient_db_path) as agent:
-                result = await agent.run(prompt)
+                # Hook 3: per-tool start/success/error (input + output capture)
+                for tool in agent._tools:
+                    def make_recorder(tool_name: str):
+                        pending: dict = {}
+
+                        def on_evt(data: Any, event: Any) -> None:
+                            name = getattr(event, "name", "")
+                            if name == "start":
+                                pending["input"] = getattr(data, "input", None)
+                            elif name == "success":
+                                output = getattr(data, "output", None)
+                                output_repr: Any = None
+                                if output is not None:
+                                    if hasattr(output, "to_json_safe"):
+                                        try:
+                                            output_repr = output.to_json_safe()
+                                        except Exception:
+                                            output_repr = str(output)[:1500]
+                                    else:
+                                        output_repr = str(output)[:1500]
+                                eq.put((
+                                    "tool_output",
+                                    {"name": tool_name, "input": pending.get("input"),
+                                     "output": output_repr, "success": True},
+                                ))
+                                pending.clear()
+                            elif name == "error":
+                                err = getattr(data, "error", None)
+                                eq.put((
+                                    "tool_output",
+                                    {"name": tool_name, "input": pending.get("input"),
+                                     "error": repr(err)[:500], "success": False},
+                                ))
+                                pending.clear()
+
+                        return on_evt
+
+                    try:
+                        tool.emitter.match("*", make_recorder(tool.name))
+                    except Exception:
+                        pass
+
+                result = await agent.run(prompt, stream=True)
             state["response"] = _result_text(result)
             state["trajectory"] = list(bundle.enforcer.trajectory)
         except Exception as exc:
@@ -265,14 +359,40 @@ def stream_analysis(
 
     threading.Thread(target=lambda: asyncio.run(_run()), daemon=True).start()
 
+    def _to_jsonable(obj: Any) -> Any:
+        if obj is None or isinstance(obj, (bool, int, float, str)):
+            return obj
+        if isinstance(obj, dict):
+            return {str(k): _to_jsonable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_to_jsonable(x) for x in obj]
+        if hasattr(obj, "model_dump"):
+            try:
+                return obj.model_dump(mode="json")
+            except Exception:
+                pass
+        return repr(obj)[:500]
+
     def _generator():
         while True:
-            item = eq.get(timeout=180)
+            item = eq.get(timeout=300)
             if item is None:
                 break
-            _, tool_name = item
-            yield f"🔧 `{tool_name}`\n\n"
-        yield state.get("response", "")
+            kind, payload = item
+            if kind == "token":
+                events.append({"kind": "reasoning_token", "text": payload})
+                yield payload  # typewriter effect
+            elif kind == "tool_call":
+                events.append({"kind": "tool_call", **_to_jsonable(payload)})
+                yield f"\n\n🔧 `{payload['name']}`\n\n"
+            elif kind == "tool_output":
+                events.append({"kind": "tool_output", **_to_jsonable(payload)})
+                # Brief inline echo (truncated) so the user sees tool finished
+                out_str = json.dumps(payload.get("output"), ensure_ascii=False, default=str)
+                snippet = (out_str[:140] + "…") if len(out_str) > 140 else out_str
+                marker = "↳" if payload.get("success") else "⚠"
+                yield f"  {marker} `{snippet}`\n\n"
+        # Don't double-yield the final response — tokens already streamed it.
 
     return _generator()
 
@@ -362,12 +482,13 @@ def _app_main() -> None:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            stream_state: dict = {"response": "", "trajectory": [], "error": None}
+            stream_state: dict = {"response": "", "trajectory": [], "error": None, "events": []}
             st.write_stream(stream_analysis(user_input, current_patient, db_path, stream_state))
 
         response = stream_state["response"]
         trajectory = stream_state["trajectory"]
         error_msg = stream_state["error"]
+        turn_events = stream_state.get("events", [])
 
         _append_chat_log(
             session_id=st.session_state.get("session_id", "unknown"),
@@ -376,6 +497,7 @@ def _app_main() -> None:
             response=response,
             trajectory=trajectory,
             error=error_msg,
+            events=turn_events,
         )
 
         st.session_state.messages.append(
