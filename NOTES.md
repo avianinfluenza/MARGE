@@ -32,6 +32,21 @@ in `packages/llm_provider/client._build_openai_compat`:
    so `_DEFAULT_NVIDIA_MODEL` now points at the 80B variant. Override
    with `NVIDIA_MODEL_ID=qwen/qwen3.5-397b-a17b` once NIM stabilises.
 
+### Slice "A" closed — full happy path live ✓
+
+NVIDIA NIM (Qwen3-Next-80B) end-to-end (smoke v8):
+```
+Trajectory: get_patient_history → predict_breast_cancer_malignancy
+            → predict_diabetes_risk → consult_medical_expert → final_report
+[ok] final_report reached: True
+ToolErrors: 0   tool_choice errors: 0
+```
+
+The `final_report` natural-language `response` correctly synthesised the ML
+findings, the expert's validation, an ask-back follow-up, and the safety
+reminder — all in one tool call (single-terminal refactor working as
+designed).
+
 ### Status after fixes (slice "A" complete)
 
 What works end-to-end (verified live):
