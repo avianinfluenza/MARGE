@@ -24,6 +24,12 @@ data/
 # CatBoost training metadata (auto-generated)
 catboost_info/
 
+# pytest-cov output
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
 # OS / editor
 .DS_Store
 .idea/
