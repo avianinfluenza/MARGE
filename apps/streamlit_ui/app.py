@@ -1,6 +1,7 @@
 """Streamlit demo UI for the MARGE orchestrator."""
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import re
 import sys
@@ -14,6 +15,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 SESSIONS_DIR = ROOT / "sessions"
+CHAT_LOG_PATH = ROOT / "logs" / "streamlit_chat.jsonl"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -164,6 +166,32 @@ def render_report(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Chat log
+# ---------------------------------------------------------------------------
+
+def _append_chat_log(
+    session_id: str,
+    patient_handle: str,
+    user_input: str,
+    response: str,
+    trajectory: list[str],
+    error: str | None = None,
+) -> None:
+    CHAT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "patient_handle": patient_handle,
+        "user_input": user_input,
+        "assistant_response": response,
+        "trajectory": trajectory,
+        "error": error,
+    }
+    with CHAT_LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator runner
 # ---------------------------------------------------------------------------
 
@@ -294,14 +322,25 @@ def _app_main() -> None:
 
         with st.chat_message("assistant"):
             with st.status("Running", expanded=False):
+                error_msg: str | None = None
                 try:
                     response, trajectory = run_analysis(user_input, current_patient, db_path)
                 except Exception as exc:
-                    response = f"Run failed: `{type(exc).__name__}: {exc}`"
+                    error_msg = f"{type(exc).__name__}: {exc}"
+                    response = f"Run failed: `{error_msg}`"
                     trajectory = []
                     st.error(response)
                 else:
                     render_report(response)
+
+        _append_chat_log(
+            session_id=st.session_state.get("session_id", "unknown"),
+            patient_handle=current_patient,
+            user_input=user_input,
+            response=response,
+            trajectory=trajectory,
+            error=error_msg,
+        )
 
         st.session_state.messages.append(
             {"role": "assistant", "content": response, "trajectory": trajectory, "report": True}
