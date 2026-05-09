@@ -3,8 +3,10 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import queue as _queue
 import re
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -212,35 +214,67 @@ def _role_label(role: Role) -> str:
     return f"{cfg.primary.provider.value}:{cfg.primary.model_id}"
 
 
-async def _run_analysis(
+def stream_analysis(
     user_message: str,
     patient_handle: str | None,
     db_path: Path,
-) -> tuple[str, list[str]]:
-    if patient_handle:
-        prompt = (
-            f"Current patient handle: `{patient_handle}`. "
-            "If the user's message contains new clinical values (glucose, BMI, blood pressure, "
-            "age, insulin, pregnancy count, family history score, etc.), call `update_patient` "
-            "to persist them before running the ML tools. "
-            f"User message: {user_message}"
-        )
-        patient_db_path: Path | None = db_path
-    else:
-        prompt = user_message
-        patient_db_path = None
+    state: dict,
+) -> Any:
+    """Return a generator that streams tool-call lines then the final response.
 
-    llm = build_chat_model_for_role(Role.ORCHESTRATOR)
-    bundle = build_bundle()
-    async with orchestrator_agent(bundle=bundle, llm=llm, patient_db_path=patient_db_path) as agent:
-        result = await agent.run(prompt)
-    return _result_text(result), list(bundle.enforcer.trajectory)
+    Populates `state` with 'response', 'trajectory', and 'error' when done.
+    Designed for use with st.write_stream().
+    """
+    eq: _queue.Queue = _queue.Queue()
 
+    async def _run() -> None:
+        if patient_handle:
+            prompt = (
+                f"Current patient handle: `{patient_handle}`. "
+                "If the user's message contains new clinical values (glucose, BMI, blood pressure, "
+                "age, insulin, pregnancy count, family history score, etc.), call `update_patient` "
+                "to persist them before running the ML tools. "
+                f"User message: {user_message}"
+            )
+            patient_db_path: Path | None = db_path
+        else:
+            prompt = user_message
+            patient_db_path = None
 
-def run_analysis(
-    user_message: str, patient_handle: str | None, db_path: Path
-) -> tuple[str, list[str]]:
-    return asyncio.run(_run_analysis(user_message, patient_handle, db_path))
+        llm = build_chat_model_for_role(Role.ORCHESTRATOR)
+        bundle = build_bundle()
+
+        # Intercept enforcer.record so every tool call streams to the queue
+        _orig_record = bundle.enforcer.record
+        def _streaming_record(tool_name: str) -> None:
+            _orig_record(tool_name)
+            eq.put(("tool", tool_name))
+        bundle.enforcer.record = _streaming_record
+
+        try:
+            async with orchestrator_agent(bundle=bundle, llm=llm, patient_db_path=patient_db_path) as agent:
+                result = await agent.run(prompt)
+            state["response"] = _result_text(result)
+            state["trajectory"] = list(bundle.enforcer.trajectory)
+        except Exception as exc:
+            state["error"] = f"{type(exc).__name__}: {exc}"
+            state["response"] = f"Run failed: `{state['error']}`"
+            state["trajectory"] = list(bundle.enforcer.trajectory)
+        finally:
+            eq.put(None)
+
+    threading.Thread(target=lambda: asyncio.run(_run()), daemon=True).start()
+
+    def _generator():
+        while True:
+            item = eq.get(timeout=180)
+            if item is None:
+                break
+            _, tool_name = item
+            yield f"🔧 `{tool_name}`\n\n"
+        yield state.get("response", "")
+
+    return _generator()
 
 
 # ---------------------------------------------------------------------------
@@ -316,12 +350,10 @@ def _app_main() -> None:
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
             traj = message.get("trajectory") or []
-            if traj:
-                with st.expander("Tool calls", expanded=False):
-                    for tool in traj:
-                        st.markdown(f"- `{tool}`")
+            for tool in traj:
+                st.markdown(f"🔧 `{tool}`")
+            st.markdown(message["content"])
 
     user_input = st.chat_input("Message")
     if user_input:
@@ -330,19 +362,12 @@ def _app_main() -> None:
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
-            with st.status("Running", expanded=False):
-                error_msg: str | None = None
-                try:
-                    response, trajectory = run_analysis(user_input, current_patient, db_path)
-                except Exception as exc:
-                    error_msg = f"{type(exc).__name__}: {exc}"
-                    response = f"Run failed: `{error_msg}`"
-                    trajectory = []
-                st.markdown(response)
-                if trajectory:
-                    with st.expander("Tool calls", expanded=False):
-                        for tool in trajectory:
-                            st.markdown(f"- `{tool}`")
+            stream_state: dict = {"response": "", "trajectory": [], "error": None}
+            st.write_stream(stream_analysis(user_input, current_patient, db_path, stream_state))
+
+        response = stream_state["response"]
+        trajectory = stream_state["trajectory"]
+        error_msg = stream_state["error"]
 
         _append_chat_log(
             session_id=st.session_state.get("session_id", "unknown"),
