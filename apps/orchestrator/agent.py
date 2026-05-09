@@ -2,22 +2,19 @@
 
 Two layers:
 
-`build_bundle()` returns the deterministic dependencies — enforcer, stubs,
-local tools, system prompt — exactly as architecture.md §4 specifies. This
-is what every test reaches for; it has no LLM dependency.
+`build_bundle()` returns deterministic dependencies (enforcer, local tools,
+system prompt). No LLM or DB dependency — tests reach for this directly.
 
-`orchestrator_agent(bundle, llm)` is an async context manager that:
-- Opens an in-process MCP Client against the `ml-models` server
-- Discovers ML tools via the live session
-- Wraps local tools with the BeeAI adapter
-- Yields a fully wired `RequirementAgent` (5 local + N MCP tools)
-- Closes the MCP session on exit
+`orchestrator_agent(bundle, llm, patient_db_path)` is an async context manager:
+- Opens in-process MCP clients for both the ML-models server and the
+  patient-data server (backed by the session SQLite DB).
+- Discovers tools from both MCP sessions.
+- Yields a fully wired `RequirementAgent`.
+- Closes both MCP sessions on exit.
 
-The session must stay open for the lifetime of the agent run — `MCPTool`
-holds a reference to the session and tearing it down before agent.run()
-makes every tool call fail with `ToolError`.
-
-Real-LLM smoke verification: `scripts/orchestrator_smoke.py`.
+Usage:
+    async with orchestrator_agent(bundle, llm, patient_db_path=db) as agent:
+        result = await agent.run("Analyse patient csv-42.")
 """
 
 from contextlib import asynccontextmanager
@@ -48,12 +45,11 @@ _SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
 
 @dataclass
 class OrchestratorBundle:
-    """Deterministic dependencies of the orchestrator (no LLM)."""
+    """Deterministic dependencies of the orchestrator (no LLM, no DB)."""
 
     enforcer: ProtocolEnforcer
     system_prompt: str
     local_tools: dict[str, object]
-    patient_source: PatientSource
 
 
 def build_bundle(
@@ -66,7 +62,6 @@ def build_bundle(
     source = patient_source or SqlitePatientSource()
 
     local_tools = {
-        "get_patient_history": make_patient_history(source, enforcer),
         "consult_medical_expert": make_consult_expert(expert, enforcer),
         "final_report": make_final_report(enforcer),
     }
@@ -75,7 +70,6 @@ def build_bundle(
         enforcer=enforcer,
         system_prompt=_SYSTEM_PROMPT_PATH.read_text(),
         local_tools=local_tools,
-        patient_source=source,
     )
 
 
@@ -83,27 +77,31 @@ def build_bundle(
 async def orchestrator_agent(
     bundle: OrchestratorBundle,
     llm: "ChatModel",
+    patient_db_path: Path | None = None,
 ) -> AsyncIterator["RequirementAgent"]:
-    """Build and yield a fully wired RequirementAgent; close MCP session on exit.
+    """Build and yield a fully wired RequirementAgent.
 
-    Why this is a context manager: BeeAI's MCPTool holds a reference to the
-    MCP ClientSession. If we close the session before the agent finishes,
-    every MCP tool call inside agent.run() raises ToolError. Keeping the
-    session open for the agent's lifetime is the simplest correct fix.
+    Opens in-process MCP sessions for the ML server and the patient-data
+    server. Both sessions stay alive for the duration of agent.run() —
+    closing either early causes MCPTool to raise ToolError.
 
-    Usage:
-        async with orchestrator_agent(bundle, llm) as agent:
-            result = await agent.run("…")
+    Args:
+        bundle: Deterministic dependencies from `build_bundle()`.
+        llm: Chat model instance.
+        patient_db_path: Path to the session SQLite DB. If None, the patient
+            MCP server is not attached (ML-only mode; patient tools unavailable).
     """
     from beeai_framework.agents.requirement import RequirementAgent
     from beeai_framework.memory import UnconstrainedMemory
+    from beeai_framework.tools.mcp import MCPTool
     from fastmcp import Client
 
     from apps.orchestrator.tools._adapter import local_tools_as_beeai
     from services.ml_mcp_server.server import build_server
+    from services.patient_data_mcp_server.server import build_patient_server
 
     local_tools = local_tools_as_beeai(bundle)
-    mcp_server = build_server()
+    ml_server = build_server()
 
     async with Client(mcp_server) as mcp_client:
         from beeai_framework.tools.mcp import MCPTool
@@ -140,7 +138,42 @@ async def orchestrator_agent(
                     bundle.enforcer.record(tool_name)
             return _record
 
+    async with Client(ml_server) as ml_client:
+        ml_tools = await MCPTool.from_client(ml_client.session)
         for t in ml_tools:
             t.emitter.match("*", _make_recorder(t.name))
 
-        yield agent
+        if patient_db_path is not None:
+            patient_server = build_patient_server(patient_db_path)
+            async with Client(patient_server) as patient_client:
+                patient_tools = await MCPTool.from_client(patient_client.session)
+
+                agent = RequirementAgent(
+                    llm=llm,
+                    memory=UnconstrainedMemory(),
+                    tools=[*local_tools, *ml_tools, *patient_tools],
+                    requirements=[],  # MARGE protocol requirement temporarily disabled
+                    name="MARGE Orchestrator",
+                    description=(
+                        "Clinical ML head researcher: orchestrates ML tools, "
+                        "manages patient data, and consults a medical expert."
+                    ),
+                    instructions=bundle.system_prompt,
+                    final_answer_as_tool=False,
+                )
+                yield agent
+        else:
+            agent = RequirementAgent(
+                llm=llm,
+                memory=UnconstrainedMemory(),
+                tools=[*local_tools, *ml_tools],
+                requirements=[],  # MARGE protocol requirement temporarily disabled
+                name="MARGE Orchestrator",
+                description=(
+                    "Clinical ML head researcher: orchestrates ML tools "
+                    "and consults a medical expert."
+                ),
+                instructions=bundle.system_prompt,
+                final_answer_as_tool=False,
+            )
+            yield agent

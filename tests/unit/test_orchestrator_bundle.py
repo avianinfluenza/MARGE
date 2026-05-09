@@ -1,13 +1,12 @@
-"""Tests for the OrchestratorBundle assembly (single-terminal version).
+"""Tests for the OrchestratorBundle assembly.
 
-Bundle wires the three deterministic local tools and the protocol
-enforcer. The BeeAI agent itself is constructed from the bundle at run
-time and is not unit-tested here (it requires a live LLM).
+Bundle wires two deterministic local tools (consult_medical_expert, final_report)
+and the protocol enforcer. Patient data and ML tools are attached via MCP at
+runtime and are not tested here.
 """
 
 from apps.orchestrator.agent import OrchestratorBundle, build_bundle
 from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
-from services.patient_data_mcp_server.sources._base import PatientSource
 
 
 class TestBuildBundle:
@@ -19,19 +18,15 @@ class TestBuildBundle:
         bundle = build_bundle()
         assert isinstance(bundle.enforcer, ProtocolEnforcer)
 
-    def test_bundle_has_patient_source(self):
+    def test_bundle_has_two_local_tools(self):
         bundle = build_bundle()
-        assert isinstance(bundle.patient_source, PatientSource)
-
-    def test_bundle_has_three_local_tools(self):
-        bundle = build_bundle()
-        expected = {"get_patient_history", "consult_medical_expert", "final_report"}
+        expected = {"consult_medical_expert", "final_report"}
         assert set(bundle.local_tools.keys()) == expected
 
     def test_bundle_local_tools_share_one_enforcer(self):
         bundle = build_bundle()
-        bundle.local_tools["get_patient_history"](handle="seed-001")
-        assert bundle.enforcer.has_called("get_patient_history")
+        bundle.local_tools["consult_medical_expert"](question="?", findings={})
+        assert bundle.enforcer.has_called("consult_medical_expert")
 
     def test_system_prompt_loaded(self):
         bundle = build_bundle()

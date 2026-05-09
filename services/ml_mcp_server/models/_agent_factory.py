@@ -370,7 +370,7 @@ def ingest_csv_and_build_agent(
         for k, v in zip(feature_names, X_df.iloc[0].values)
     }
     agent._sample_inputs = sample_data
-    
+
     # Generate the Python wrapper class!
     generate_agent_class_file(
         output_py_path=f".{agent_name}_agent.py", # Where your server looks for models
