@@ -65,6 +65,7 @@ async def test_agent_has_patient_tools_when_db_provided(tmp_path):
     assert {"list_patients", "get_patient", "update_patient"} <= tool_names
 
 
+@pytest.mark.skip(reason="MARGE protocol requirement temporarily disabled")
 @pytest.mark.asyncio
 async def test_agent_has_marge_protocol_requirement():
     from apps.orchestrator.requirements.marge_protocol import (

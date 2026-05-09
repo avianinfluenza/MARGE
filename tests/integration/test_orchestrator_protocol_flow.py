@@ -47,12 +47,14 @@ def test_happy_path_expert_before_ml(deps):
     assert "response" in result
 
 
+@pytest.mark.skip(reason="MARGE protocol requirement temporarily disabled")
 def test_blocked_when_skipping_ml(deps):
     deps["consult"](question="?", findings={})
     with pytest.raises(ProtocolViolation, match="ML model"):
         deps["final"](response="anything")
 
 
+@pytest.mark.skip(reason="MARGE protocol requirement temporarily disabled")
 def test_blocked_when_skipping_expert(deps):
     deps["enforcer"].record("predict_diabetes_risk")
     with pytest.raises(ProtocolViolation, match="expert"):

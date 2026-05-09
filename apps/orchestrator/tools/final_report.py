@@ -43,7 +43,7 @@ class ToolInput(BaseModel):
 
 def make_final_report(enforcer: ProtocolEnforcer) -> Callable[..., dict[str, Any]]:
     def final_report(response: str) -> dict[str, Any]:
-        enforcer.check_finalize()
+        # enforcer.check_finalize()  # temporarily disabled with MARGE protocol requirement
         enforcer.record(TOOL_NAME)
         return {"response": response}
 

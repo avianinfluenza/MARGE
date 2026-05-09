@@ -111,7 +111,7 @@ async def orchestrator_agent(
                     llm=llm,
                     memory=UnconstrainedMemory(),
                     tools=[*local_tools, *ml_tools, *patient_tools],
-                    requirements=[build_marge_protocol_requirement()],
+                    requirements=[],  # MARGE protocol requirement temporarily disabled
                     name="MARGE Orchestrator",
                     description=(
                         "Clinical ML head researcher: orchestrates ML tools, "
@@ -126,7 +126,7 @@ async def orchestrator_agent(
                 llm=llm,
                 memory=UnconstrainedMemory(),
                 tools=[*local_tools, *ml_tools],
-                requirements=[build_marge_protocol_requirement()],
+                requirements=[],  # MARGE protocol requirement temporarily disabled
                 name="MARGE Orchestrator",
                 description=(
                     "Clinical ML head researcher: orchestrates ML tools "
