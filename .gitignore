@@ -21,6 +21,8 @@ data/
 **/artifacts/
 **/corpus/
 **/seed/*.sqlite
+logs/
+services/ml_mcp_server_old/
 
 # CatBoost training metadata (auto-generated)
 catboost_info/

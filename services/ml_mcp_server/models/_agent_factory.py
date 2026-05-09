@@ -39,6 +39,7 @@ class AgentConfig:
     })
     n_splits: int = 5
     trained_on_desc: str = "Dynamic Internal Dataset"
+    feature_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 class SHAPExplainer:
@@ -100,6 +101,7 @@ class DynamicMLAgent(MLModel):
     def __init__(self, config: AgentConfig):
         self.config = config
         self._input_schema = self._build_dynamic_schema()
+        self._sample_inputs: dict[str, float] = {}
         
         if self.config.artifact_path.exists():
             print(f"[{self.name}] Found existing artifact. Loading state...")
@@ -119,15 +121,36 @@ class DynamicMLAgent(MLModel):
 
     def _build_dynamic_schema(self) -> Type[BaseModel]:
         """Dynamically creates a Pydantic model for input validation based on features."""
-        fields = {
-            self._sanitize(name): (Optional[float], Field(default=None, description=f"Feature measurement: {name} (Optional)"))
-            for name in self.config.feature_names
-        }
+        fields = {}
+        for name in self.config.feature_names:
+            sanitized_name = self._sanitize(name)
+            metadata = (
+                self.config.feature_metadata.get(sanitized_name)
+                or self.config.feature_metadata.get(name)
+                or {}
+            )
+            description = metadata.get("detail") or metadata.get("description")
+            if not description:
+                description = f"Feature measurement: {name}."
+            fields[sanitized_name] = (
+                Optional[float],
+                Field(
+                    default=None,
+                    description=description,
+                    json_schema_extra={
+                        "label": metadata.get("label"),
+                        "aliases": metadata.get("aliases", []),
+                    },
+                ),
+            )
         return create_model(f"{self.name}Inputs", **fields)
 
     @property
     def input_schema(self) -> Type[BaseModel]:
         return self._input_schema
+
+    def sample_inputs(self) -> dict[str, Any]:
+        return dict(self._sample_inputs)
 
     @property
     def metadata(self) -> ModelMetadata:
@@ -346,7 +369,8 @@ def ingest_csv_and_build_agent(
         agent._sanitize(k): float(v) 
         for k, v in zip(feature_names, X_df.iloc[0].values)
     }
-    
+    agent._sample_inputs = sample_data
+
     # Generate the Python wrapper class!
     generate_agent_class_file(
         output_py_path=f".{agent_name}_agent.py", # Where your server looks for models

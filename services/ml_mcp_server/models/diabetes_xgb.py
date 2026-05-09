@@ -18,6 +18,50 @@ _FEATURE_NAMES = [
     "preg", "plas", "pres", "skin", "insu", "mass", "pedi", "age"
 ]
 
+_FEATURE_METADATA = {
+    "preg": {
+        "label": "Pregnancy history",
+        "detail": "Number of pregnancies, only when clinically relevant.",
+        "aliases": ["pregnancies", "pregnancy count", "임신 횟수", "임신"],
+    },
+    "plas": {
+        "label": "Blood sugar",
+        "detail": "Recent fasting glucose, random glucose, or oral glucose tolerance test result.",
+        "aliases": ["plasma glucose", "blood sugar", "glucose", "혈당", "공복혈당", "식후혈당"],
+    },
+    "pres": {
+        "label": "Blood pressure",
+        "detail": "Recent diastolic blood pressure reading.",
+        "aliases": ["diastolic blood pressure", "blood pressure", "bp", "혈압"],
+    },
+    "skin": {
+        "label": "Skinfold thickness",
+        "detail": "Triceps skinfold thickness. This is often unavailable outside clinical records.",
+        "aliases": ["skinfold", "skin thickness", "피부 두께", "피부두께"],
+    },
+    "insu": {
+        "label": "Insulin",
+        "detail": "Recent 2-hour serum insulin result, if available.",
+        "aliases": ["insulin", "인슐린"],
+    },
+    "mass": {
+        "label": "BMI",
+        "detail": "Height and weight are enough if BMI is not already known.",
+        "aliases": ["bmi", "body mass index", "체질량", "체질량지수"],
+    },
+    "pedi": {
+        "label": "Family history",
+        "detail": "Family history of diabetes or a calculated diabetes pedigree score.",
+        "aliases": ["diabetes pedigree", "family history", "가족력", "유전"],
+    },
+    "age": {
+        "label": "Age",
+        "detail": "Current age in years.",
+        "aliases": ["age", "나이", "살", "세"],
+    },
+}
+
+
 # --- 2. Define the Agent Configuration ---
 _DIABETES_CONFIG = AgentConfig(
     agent_name="predict_diabetes_risk",
@@ -30,6 +74,7 @@ _DIABETES_CONFIG = AgentConfig(
     version="0.2.0-factory",
     artifact_path=_ARTIFACT_PATH,
     feature_names=_FEATURE_NAMES,
+    feature_metadata=_FEATURE_METADATA,
     target_classes=["low_risk", "diabetic_risk"],  # 0 = low risk, 1 = diabetic risk
     trained_on_desc="OpenML 'diabetes' v1 (Pima Indians, n=768) - Dynamic Ensemble",
     n_splits=5
