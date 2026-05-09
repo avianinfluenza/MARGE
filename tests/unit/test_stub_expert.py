@@ -2,7 +2,7 @@
 
 import pytest
 
-from packages.schemas.retrieval import Citation, MedicalExpertResponse
+from packages.schemas.retrieval import Citation, MedicalExpertResponse, RetrievedDocument
 from services.medical_expert_agent.agent import (
     MedicalExpertAgent,
     StubMedicalExpert,
@@ -70,7 +70,9 @@ class TestMedicalExpertAgent:
             '{"reasoning":"The supplied glucose and BMI warrant follow-up.",'
             '"abstained":false,"abstain_reason":null,"citations":[]}'
         )
-        expert = MedicalExpertAgent(llm, system_prompt="expert system")
+        expert = MedicalExpertAgent(
+            llm, system_prompt="expert system", enable_web_search=False
+        )
 
         response = await expert.consult(
             question="What is the clinical context?",
@@ -81,6 +83,44 @@ class TestMedicalExpertAgent:
         assert "glucose" in response.reasoning
         assert len(response.citations) == 1
         assert llm.messages is not None
+
+    @pytest.mark.asyncio
+    async def test_injects_web_rag_context_and_uses_it_as_fallback_citation(self):
+        llm = _FakeLLM(
+            '{"reasoning":"Use retrieved guidance to confirm follow-up.",'
+            '"abstained":false,"abstain_reason":null,"citations":[]}'
+        )
+        documents = [
+            RetrievedDocument(
+                title="CDC diabetes testing",
+                snippet="HbA1c and fasting glucose are used to evaluate diabetes.",
+                source_url="https://www.cdc.gov/diabetes/testing/",
+                retrieval_source="web",
+                score=0.9,
+            )
+        ]
+        calls = []
+
+        def fake_search(query: str, max_results: int) -> list[RetrievedDocument]:
+            calls.append((query, max_results))
+            return documents
+
+        expert = MedicalExpertAgent(
+            llm,
+            system_prompt="expert system",
+            web_search=fake_search,
+            enable_web_search=True,
+            max_web_results=2,
+        )
+
+        response = await expert.consult(
+            question="What follow-up is appropriate?",
+            findings={"prediction": "diabetic_risk", "confidence": 0.83},
+        )
+
+        assert calls and calls[0][1] == 2
+        assert "retrieved_context" in llm.messages[1].text
+        assert response.citations[0].document.title == "CDC diabetes testing"
 
     def test_builds_stub_when_no_expert_env_is_configured(self, monkeypatch):
         monkeypatch.delenv("MEDICAL_EXPERT_PRIMARY", raising=False)

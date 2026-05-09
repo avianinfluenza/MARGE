@@ -1,14 +1,14 @@
 """Local tool: emit the final response to the user.
 
 The single terminal tool. The orchestrator writes a natural-language
-`response` here — covering positive recommendations, abstentions
-("cannot reliably advise — please see a doctor"), or follow-up
-questions ("please provide HbA1c, recent mammogram, family history").
+`response` here, covering positive recommendations, abstentions
+("cannot reliably advise; please see a doctor"), or follow-up questions
+("please provide HbA1c, recent mammogram, family history").
 
 Gating is handled at the LLM-planning layer by `MARGEProtocolRequirement`
-in `apps/orchestrator/requirements/marge_protocol.py`. This module also
-keeps a small middleware-side check (`enforce_protocol`) as a defensive
-backstop in case any caller invokes the tool outside the agent loop.
+in `apps/orchestrator/requirements/marge_protocol.py`. This module also keeps
+a small middleware-side check (`enforce_protocol`) as a defensive backstop in
+case any caller invokes the tool outside the agent loop.
 """
 
 from collections.abc import Callable
@@ -21,8 +21,8 @@ from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
 TOOL_NAME = "final_report"
 TOOL_DESCRIPTION = (
     "Emit the final response to the user. THIS IS THE ONLY PATH TO A USER-FACING "
-    "ANSWER. The `response` field accepts free-form natural language — use it for "
-    "the recommendation, an abstention ('I cannot give reliable guidance — please "
+    "ANSWER. The `response` field accepts free-form natural language; use it for "
+    "the recommendation, an abstention ('I cannot give reliable guidance; please "
     "see a doctor'), or a follow-up question ('please provide X, Y, Z'). The "
     "orchestrator framework refuses to call this tool unless the trajectory "
     "contains consult_medical_expert -> predict_* -> consult_medical_expert."
@@ -42,7 +42,7 @@ class ToolInput(BaseModel):
 
 def make_final_report(enforcer: ProtocolEnforcer) -> Callable[..., dict[str, Any]]:
     def final_report(response: str) -> dict[str, Any]:
-        # enforcer.check_finalize()  # temporarily disabled with MARGE protocol requirement
+        enforcer.check_finalize()
         enforcer.record(TOOL_NAME)
         return {"response": response}
 

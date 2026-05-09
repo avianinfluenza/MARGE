@@ -67,6 +67,14 @@ class TestPatientHistoryTool:
 
 
 class TestFinalReportTool:
+    @staticmethod
+    def _ready_enforcer() -> ProtocolEnforcer:
+        enforcer = ProtocolEnforcer()
+        enforcer.record("consult_medical_expert")
+        enforcer.record("predict_diabetes_risk")
+        enforcer.record("consult_medical_expert")
+        return enforcer
+
     def test_blocks_when_no_ml_called(self):
         enforcer = ProtocolEnforcer()
         enforcer.record("consult_medical_expert")
@@ -91,11 +99,10 @@ class TestFinalReportTool:
         assert result == {"response": "High-confidence findings — refer for biopsy."}
 
     def test_records_final_report_call(self):
-        enforcer = ProtocolEnforcer()
-        enforcer.record("consult_medical_expert")
-        enforcer.record("predict_diabetes_risk")
-        enforcer.record("consult_medical_expert")
-        return enforcer
+        enforcer = self._ready_enforcer()
+        final = make_final_report(enforcer)
+        final(response="All clear.")
+        assert enforcer.has_called("final_report")
 
     def test_returns_response_dict(self):
         final = make_final_report(self._ready_enforcer())

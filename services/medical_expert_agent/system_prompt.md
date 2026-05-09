@@ -95,6 +95,8 @@ Do not overstate urgency when the payload does not support it, but do not ignore
 
 ## Citation Policy
 
+If `retrieved_context` is present in the consultation payload, treat it as web RAG evidence. Use it when it is relevant to the clinical question, and cite only documents from `retrieved_context` in the `citations` array.
+
 If external sources are available in the payload or through tools, cite them. If no external retrieval tools or source passages are available, use an empty citations list.
 
 Do not fabricate source titles, URLs, or quotes. A general reasoning response without external sources is acceptable if the payload is sufficient and `citations` is empty.

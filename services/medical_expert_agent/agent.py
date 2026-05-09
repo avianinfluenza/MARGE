@@ -5,13 +5,17 @@ returns a schema-conformant `MedicalExpertResponse`. A deterministic stub is
 kept for unit tests and for local runs where no expert provider is configured.
 """
 
+import asyncio
+import inspect
 import json
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from packages.schemas.retrieval import Citation, MedicalExpertResponse, RetrievedDocument
+from services.medical_expert_agent.tools.search_web import DEFAULT_MAX_RESULTS, search_web
 
 if TYPE_CHECKING:
     from beeai_framework.backend.chat import ChatModel
@@ -66,17 +70,44 @@ class StubMedicalExpert:
 class MedicalExpertAgent:
     """LLM-backed medical expert used by the orchestrator's expert tool."""
 
-    def __init__(self, llm: "ChatModel", system_prompt: str | None = None) -> None:
+    def __init__(
+        self,
+        llm: "ChatModel",
+        system_prompt: str | None = None,
+        *,
+        web_search: Callable[[str, int], list[RetrievedDocument]] | None = None,
+        enable_web_search: bool | None = None,
+        max_web_results: int | None = None,
+    ) -> None:
         self._llm = llm
         self._system_prompt = system_prompt or _SYSTEM_PROMPT_PATH.read_text()
+        self._web_search = web_search or search_web
+        self._enable_web_search = (
+            _env_flag("MARGE_ENABLE_WEB_RAG", default=True)
+            if enable_web_search is None
+            else enable_web_search
+        )
+        self._max_web_results = max_web_results or _env_int(
+            "MARGE_WEB_RAG_MAX_RESULTS", DEFAULT_MAX_RESULTS
+        )
 
     async def consult(self, question: str, findings: dict[str, Any]) -> MedicalExpertResponse:
         from beeai_framework.backend.message import SystemMessage, UserMessage
 
+        retrieved_documents = await self._retrieve_web_context(question, findings)
         payload = {
             "question": question,
             "findings": findings,
         }
+        if retrieved_documents:
+            payload["retrieved_context"] = [
+                _document_to_prompt_payload(doc) for doc in retrieved_documents
+            ]
+            payload["retrieval_instruction"] = (
+                "Use retrieved_context as web RAG evidence when relevant. Cite only "
+                "documents from retrieved_context in the citations array."
+            )
+
         user_prompt = (
             "Review this orchestrator consultation payload and return only JSON.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, default=str)}"
@@ -85,9 +116,32 @@ class MedicalExpertAgent:
             [SystemMessage(self._system_prompt), UserMessage(user_prompt)]
         )
         raw = result.get_text_content() if hasattr(result, "get_text_content") else str(result)
-        return self._parse_response(raw)
+        return self._parse_response(raw, fallback_documents=retrieved_documents)
 
-    def _parse_response(self, raw: str) -> MedicalExpertResponse:
+    async def _retrieve_web_context(
+        self, question: str, findings: dict[str, Any]
+    ) -> list[RetrievedDocument]:
+        if not self._enable_web_search:
+            return []
+
+        query = _build_web_search_query(question, findings)
+        try:
+            if inspect.iscoroutinefunction(self._web_search):
+                result = await self._web_search(query, self._max_web_results)
+            else:
+                result = await asyncio.to_thread(
+                    self._web_search, query, self._max_web_results
+                )
+            return list(result)
+        except Exception:
+            return []
+
+    def _parse_response(
+        self,
+        raw: str,
+        *,
+        fallback_documents: list[RetrievedDocument] | None = None,
+    ) -> MedicalExpertResponse:
         try:
             data = _extract_json_object(raw)
         except ValueError:
@@ -111,7 +165,11 @@ class MedicalExpertAgent:
 
         citations = _parse_citations(data.get("citations"))
         if not citations and not abstained:
-            citations = [Citation(document=_EXPERT_AGENT_DOC, supporting_quote=None)]
+            source_documents = fallback_documents or [_EXPERT_AGENT_DOC]
+            citations = [
+                Citation(document=document, supporting_quote=None)
+                for document in source_documents
+            ]
 
         return MedicalExpertResponse(
             reasoning=reasoning,
@@ -178,9 +236,46 @@ def _parse_citations(value: Any) -> list[Citation]:
     return citations
 
 
+def _document_to_prompt_payload(document: RetrievedDocument) -> dict[str, Any]:
+    return {
+        "title": document.title,
+        "snippet": document.snippet,
+        "source_url": document.source_url,
+        "retrieval_source": document.retrieval_source,
+        "score": document.score,
+        "retrieved_at": document.retrieved_at.isoformat(),
+    }
+
+
+def _build_web_search_query(question: str, findings: dict[str, Any]) -> str:
+    findings_text = json.dumps(findings, ensure_ascii=False, default=str)
+    findings_text = re.sub(r"`?seed-\d+`?", "patient", findings_text)
+    findings_text = re.sub(r"\s+", " ", findings_text)
+    query = (
+        "clinical guideline patient advice "
+        f"{question.strip()} "
+        f"{findings_text[:500]}"
+    )
+    return query[:900]
+
+
 def _expert_env_configured() -> bool:
     return bool(os.getenv("MEDICAL_EXPERT_PRIMARY") or os.getenv("LLM_PROVIDER"))
 
 
 def _env_truthy(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
