@@ -30,8 +30,9 @@ from packages.llm_provider.settings import Role, RoleConfig
 
 _PROMPT = (
     "Analyse seed patient `seed-001`. "
-    "Use the available ML tools to assess their risk profile, then consult "
-    "the medical expert to validate. Produce a final report."
+    "Follow the MARGE workflow: consult the medical expert first, run relevant "
+    "ML tools with sufficient tabular data, consult the expert again with the "
+    "ML results, then produce a final report."
 )
 
 
@@ -50,7 +51,7 @@ async def main() -> None:
     orch_cfg = RoleConfig.from_env(Role.ORCHESTRATOR)
     expert_cfg = RoleConfig.from_env(Role.MEDICAL_EXPERT)
     print(f"\nOrchestrator LLM   : {_describe(orch_cfg)}")
-    print(f"Medical-expert LLM : {_describe(expert_cfg)}  [stub for this slice]")
+    print(f"Medical-expert LLM : {_describe(expert_cfg)}")
 
     llm = build_chat_model_for_role(Role.ORCHESTRATOR)
     bundle = build_bundle()

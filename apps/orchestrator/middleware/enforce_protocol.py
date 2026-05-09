@@ -42,24 +42,49 @@ class ProtocolEnforcer:
     def has_called(self, name: str) -> bool:
         return name in self._calls
 
+    def _is_ml_call(self, name: str) -> bool:
+        return any(name.startswith(p) for p in self._ml_prefixes)
+
+    def _is_expert_call(self, name: str) -> bool:
+        return name in self._expert_names
+
     def _ml_called(self) -> bool:
-        return any(c.startswith(p) for c in self._calls for p in self._ml_prefixes)
+        return any(self._is_ml_call(c) for c in self._calls)
 
     def _expert_called(self) -> bool:
-        return any(c in self._expert_names for c in self._calls)
+        return any(self._is_expert_call(c) for c in self._calls)
+
+    def _has_expert_ml_expert_sequence(self) -> bool:
+        seen_pre_expert = False
+        seen_ml_after_pre_expert = False
+
+        for call in self._calls:
+            if self._is_expert_call(call):
+                if seen_ml_after_pre_expert:
+                    return True
+                seen_pre_expert = True
+            elif self._is_ml_call(call) and seen_pre_expert:
+                seen_ml_after_pre_expert = True
+
+        return False
 
     def can_finalize(self) -> bool:
-        return self._ml_called() and self._expert_called()
+        return self._has_expert_ml_expert_sequence()
 
     def check_finalize(self) -> None:
-        if not self._ml_called():
-            raise ProtocolViolation(
-                "Cannot call final_report: no ML model has been consulted. "
-                "Call at least one ML prediction tool first, then consult the "
-                "medical expert before finalising."
-            )
         if not self._expert_called():
             raise ProtocolViolation(
                 "Cannot call final_report: medical expert has not been consulted. "
-                "Call consult_medical_expert with the ML findings before finalising."
+                "Call consult_medical_expert before ML and again after ML findings."
+            )
+        if not self._ml_called():
+            raise ProtocolViolation(
+                "Cannot call final_report: no ML model has been consulted. "
+                "Call at least one relevant ML prediction tool before finalising."
+            )
+        if not self._has_expert_ml_expert_sequence():
+            raise ProtocolViolation(
+                "Cannot call final_report: workflow order is incomplete. "
+                "Required sequence is consult_medical_expert -> predict_* -> "
+                "consult_medical_expert."
             )

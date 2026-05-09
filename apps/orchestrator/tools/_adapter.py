@@ -16,6 +16,7 @@ so we just wrap the return value as `JSONToolOutput`.
 """
 
 import functools
+import inspect
 from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -25,7 +26,6 @@ from pydantic import BaseModel
 from apps.orchestrator.tools import (
     consult_expert as _ce,
     final_report as _fr,
-    patient_history as _ph,
 )
 
 if TYPE_CHECKING:
@@ -35,7 +35,9 @@ if TYPE_CHECKING:
 
 
 # Order is the order the LLM will see them in tool listings.
-LOCAL_TOOL_MODULES: tuple[ModuleType, ...] = (_ph, _ce, _fr)
+# Patient tools (list_patients, get_patient, update_patient) come from the
+# patient-data MCP server and are not listed here.
+LOCAL_TOOL_MODULES: tuple[ModuleType, ...] = (_ce, _fr)
 
 
 def _to_tool_output(result: Any) -> Any:
@@ -63,15 +65,18 @@ def to_beeai_tool(
     from beeai_framework.tools import tool
 
     @functools.wraps(fn)
-    def output_wrapped(*args: Any, **kwargs: Any) -> Any:
-        return _to_tool_output(fn(*args, **kwargs))
+    async def output_wrapped(*args: Any, **kwargs: Any) -> Any:
+        result = fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return _to_tool_output(result)
 
     decorator = tool(name=name, description=description, input_schema=input_schema)
     return decorator(output_wrapped)
 
 
 def local_tools_as_beeai(bundle: "OrchestratorBundle") -> list["Tool"]:
-    """Convert all five local tools in `bundle` into BeeAI Tools."""
+    """Convert local tools in `bundle` into BeeAI Tools."""
     tools: list[Tool] = []
     for mod in LOCAL_TOOL_MODULES:
         impl = bundle.local_tools[mod.TOOL_NAME]

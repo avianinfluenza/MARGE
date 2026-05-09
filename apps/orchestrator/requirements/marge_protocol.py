@@ -1,25 +1,17 @@
-"""BeeAI Requirement encoding architecture.md §2.
+"""Disabled BeeAI Requirements for the MARGE workflow.
 
-Single rule on the orchestrator's only terminal tool, `final_report`:
+The previous runtime gate enforced:
 
-- It is `allowed` only after the trajectory contains at least one
-  predict_* tool call AND at least one consult_medical_expert call,
-  in any order.
-- The agent's stop is `prevent`-ed until `final_report` has been
-  called at least once.
+    consult_medical_expert -> predict_* -> consult_medical_expert -> final_report
 
-The two `custom_checks` look at the entire successful step trajectory
-without any ordering constraint between predict_* and consult_*. Multiple
-calls in either direction are fine; abstention or follow-up questions
-are expressed in `final_report`'s natural-language `response` field
-rather than via separate tools.
+That made no-data, missing-info, and information-only turns fail because the
+agent could not call `final_report` until an ML tool succeeded. For now, the
+BeeAI ConditionalRequirements are intentionally disabled; the workflow remains
+prompt guidance rather than a hard tool-availability gate.
 """
 
+from collections.abc import Iterable
 from typing import Any
-
-from beeai_framework.agents.requirement.requirements.conditional import (
-    ConditionalRequirement,
-)
 
 
 _TERMINAL_TOOL_NAME = "final_report"
@@ -45,21 +37,52 @@ def has_consulted_expert(state: Any) -> bool:
     return _EXPERT_TOOL_NAME in _successful_tool_names(state)
 
 
-def build_marge_protocol_requirement() -> ConditionalRequirement:
-    """Construct the single Requirement that gates `final_report`.
+def has_pre_ml_expert_consult(state: Any) -> bool:
+    """True if an expert consult succeeded before a successful ML prediction."""
+    seen_expert = False
+    for name in _successful_tool_names(state):
+        if name == _EXPERT_TOOL_NAME:
+            seen_expert = True
+        elif name.startswith(_ML_PREDICTION_PREFIX) and seen_expert:
+            return True
+    return False
 
-    - `custom_checks` keeps `final_report` disallowed until both checks pass.
-    - `min_invocations=1` keeps `prevent_stop=True` until `final_report` has
-      been called at least once — so the agent cannot terminate without
-      producing a final report.
-    """
-    return ConditionalRequirement(
-        target=_TERMINAL_TOOL_NAME,
-        custom_checks=[has_any_ml_prediction, has_consulted_expert],
-        min_invocations=1,
-        only_success_invocations=True,
-        reason=(
-            "final_report requires at least one ML prediction (predict_*) and "
-            "one consult_medical_expert call to have appeared in the trajectory."
-        ),
-    )
+
+def has_post_ml_expert_consult(state: Any) -> bool:
+    """True if an expert consult succeeded after a successful ML prediction."""
+    seen_ml = False
+    for name in _successful_tool_names(state):
+        if name.startswith(_ML_PREDICTION_PREFIX):
+            seen_ml = True
+        elif name == _EXPERT_TOOL_NAME and seen_ml:
+            return True
+    return False
+
+
+def has_expert_ml_expert_sequence(state: Any) -> bool:
+    """True if the successful trajectory contains expert -> ML -> expert."""
+    seen_pre_expert = False
+    seen_ml_after_pre_expert = False
+
+    for name in _successful_tool_names(state):
+        if name == _EXPERT_TOOL_NAME:
+            if seen_ml_after_pre_expert:
+                return True
+            seen_pre_expert = True
+        elif name.startswith(_ML_PREDICTION_PREFIX) and seen_pre_expert:
+            seen_ml_after_pre_expert = True
+
+    return False
+
+
+def build_marge_protocol_requirement() -> None:
+    """Return no terminal BeeAI requirement while runtime gating is disabled."""
+    return None
+
+
+def build_marge_protocol_requirements(
+    ml_tool_names: Iterable[str] = (),
+) -> list[Any]:
+    """Return no BeeAI requirements for the current tool surface."""
+    _ = tuple(ml_tool_names)
+    return []

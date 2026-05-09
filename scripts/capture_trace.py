@@ -28,8 +28,9 @@ from packages.llm_provider.settings import Role, RoleConfig
 
 PROMPT = (
     "Analyse seed patient `seed-001`. "
-    "Use the available ML tools to assess their risk profile, then consult "
-    "the medical expert to validate. Produce a final report."
+    "Follow the MARGE workflow: consult the medical expert first, run relevant "
+    "ML tools with sufficient tabular data, consult the expert again with the "
+    "ML results, then produce a final report."
 )
 
 OUT_DIR = Path(__file__).parent.parent / "docs" / "traces"
@@ -133,7 +134,7 @@ async def main() -> None:
                 f"{orch_cfg.fallback.provider.value}:{orch_cfg.fallback.model_id}"
                 if orch_cfg.fallback else None
             ),
-            "medical_expert": "stub (StubMedicalExpert)",
+            "medical_expert": f"{expert_cfg.primary.provider.value}:{expert_cfg.primary.model_id}",
         },
         "user_prompt": PROMPT,
         "iterations": [

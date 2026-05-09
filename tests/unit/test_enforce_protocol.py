@@ -1,10 +1,8 @@
 """Unit tests for the ProtocolEnforcer code-side defensive backstop.
 
-Architecture.md §2's main enforcement is now LLM-side via
-`MARGEProtocolRequirement`. This middleware is the defensive backstop
-that raises if `final_report` is invoked without the trajectory ever
-recording an ML and expert call (e.g., from a test that bypasses the
-agent loop).
+The main enforcement is LLM-side via MARGE Requirements. This middleware is
+the defensive backstop that raises if `final_report` is invoked without the
+required expert -> ML -> expert trajectory.
 """
 
 import pytest
@@ -33,7 +31,7 @@ class TestRecording:
 class TestFinalizeGate:
     def test_blocks_finalize_when_nothing_called(self):
         enforcer = ProtocolEnforcer()
-        with pytest.raises(ProtocolViolation, match="ML model"):
+        with pytest.raises(ProtocolViolation, match="medical expert"):
             enforcer.check_finalize()
 
     def test_blocks_finalize_when_only_ml_called(self):
@@ -48,15 +46,31 @@ class TestFinalizeGate:
         with pytest.raises(ProtocolViolation, match="ML model"):
             enforcer.check_finalize()
 
-    def test_allows_finalize_when_both_called(self):
+    def test_blocks_finalize_without_post_ml_expert(self):
+        enforcer = ProtocolEnforcer()
+        enforcer.record("consult_medical_expert")
+        enforcer.record("predict_breast_cancer_malignancy")
+        with pytest.raises(ProtocolViolation, match="workflow order"):
+            enforcer.check_finalize()
+
+    def test_blocks_finalize_when_ml_precedes_first_expert(self):
         enforcer = ProtocolEnforcer()
         enforcer.record("predict_breast_cancer_malignancy")
         enforcer.record("consult_medical_expert")
+        with pytest.raises(ProtocolViolation, match="workflow order"):
+            enforcer.check_finalize()
+
+    def test_allows_finalize_when_expert_ml_expert_sequence_exists(self):
+        enforcer = ProtocolEnforcer()
+        enforcer.record("consult_medical_expert")
+        enforcer.record("predict_breast_cancer_malignancy")
+        enforcer.record("consult_medical_expert")
         assert enforcer.can_finalize()
-        enforcer.check_finalize()  # must not raise
+        enforcer.check_finalize()
 
     def test_any_predict_prefix_satisfies_ml_requirement(self):
         enforcer = ProtocolEnforcer()
+        enforcer.record("consult_medical_expert")
         enforcer.record("predict_diabetes_risk")
         enforcer.record("consult_medical_expert")
         enforcer.check_finalize()
@@ -68,6 +82,7 @@ class TestConfigurability:
             ml_tool_prefixes=("ml_",),
             expert_tool_names=("consult_medical_expert",),
         )
+        enforcer.record("consult_medical_expert")
         enforcer.record("ml_breast_cancer")
         enforcer.record("consult_medical_expert")
         enforcer.check_finalize()
@@ -77,6 +92,7 @@ class TestConfigurability:
             ml_tool_prefixes=("predict_",),
             expert_tool_names=("ask_doctor",),
         )
+        enforcer.record("ask_doctor")
         enforcer.record("predict_x")
         enforcer.record("ask_doctor")
         enforcer.check_finalize()

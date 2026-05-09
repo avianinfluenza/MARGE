@@ -14,7 +14,7 @@ from fastmcp import Client
 from services.ml_mcp_server.server import build_server
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def server():
     return build_server()
 

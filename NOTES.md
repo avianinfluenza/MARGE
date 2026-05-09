@@ -95,8 +95,8 @@ Next slice options (in priority order):
    `consult_medical_expert` before `final_report`". This deterministically
    forces the call regardless of model quality. Heavier change but
    architecture-aligned.
-3. **Wire real medical expert sub-agent** — replace `StubMedicalExpert`
-   with a BeeAI agent + Tavily/Exa search + `enforce_citation` middleware.
+3. **Add retrieval-backed expert citations** — extend `MedicalExpertAgent`
+   with Tavily/Exa search + `enforce_citation` middleware.
 4. **Streamlit UI** — visual demo on top of the working orchestrator core.
 
 What to add next slice:

@@ -9,7 +9,7 @@ See [`overview.md`](./overview.md) for the concept and [`architecture.md`](./arc
 - **ML stack** (XGBoost + CatBoost over MCP): two models registered, drop-in pattern verified.
 - **BeeAI orchestrator**: assembled (`RequirementAgent`, 5 local tools + 2 MCP-discovered ML tools), protocol middleware enforced; live LLM tested against NVIDIA NIM (Qwen3.5-397B).
 - **LLM provider abstraction** (`packages/llm_provider/`): five providers (Anthropic, watsonx, Cerebras, NVIDIA NIM, Chutes) + per-role routing (orchestrator vs medical expert) + opt-in `FallbackChatModel`.
-- **Medical expert sub-agent**: stub returning a fixed `MedicalExpertResponse` — real BeeAI sub-agent + RAG / web search wiring is the next slice.
+- **Medical expert sub-agent**: LLM-backed `MedicalExpertAgent` wired via `MEDICAL_EXPERT_*`; optional Tavily web RAG injects citable medical context into expert consultations.
 - **Streamlit UI**: not started.
 
 ## Setup
@@ -44,9 +44,12 @@ Optional dependency groups (install when working on those layers):
 ```bash
 uv sync --extra orchestrator   # BeeAI Framework + watsonx.ai + anthropic
 uv sync --extra ui             # Streamlit + matplotlib + plotly
-uv sync --extra medical-kb     # Chroma + sentence-transformers + Tavily
+uv sync --extra medical-kb     # Chroma + sentence-transformers + Tavily web RAG
 uv sync --extra dev            # pytest + ruff
 ```
+
+For medical-expert web RAG, set `TAVILY_API_KEY` in `.env`. Disable it with
+`MARGE_ENABLE_WEB_RAG=false`.
 
 ## Layout
 

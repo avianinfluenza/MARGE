@@ -151,12 +151,17 @@ def _build_chutes(s: LLMSettings) -> "ChatModel":
     return _build_openai_compat(s, "CHUTES_API_KEY")
 
 
+def _build_featherless(s: LLMSettings) -> "ChatModel":
+    return _build_openai_compat(s, "FEATHERLESS_API_KEY")
+
+
 _BUILDERS = {
     Provider.ANTHROPIC: _build_anthropic,
     Provider.WATSONX: _build_watsonx,
     Provider.CEREBRAS: _build_cerebras,
     Provider.NVIDIA: _build_nvidia,
     Provider.CHUTES: _build_chutes,
+    Provider.FEATHERLESS: _build_featherless,
 }
 
 

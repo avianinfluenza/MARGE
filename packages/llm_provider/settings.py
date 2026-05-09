@@ -14,12 +14,13 @@ Two layers:
 
 Env vars:
 - LLM_PROVIDER         — "anthropic" (default), "watsonx", "cerebras",
-                         "nvidia", "chutes"
+                         "nvidia", "chutes", "featherless"
 - ANTHROPIC_API_KEY / ANTHROPIC_MODEL_ID
 - WATSONX_API_KEY / WATSONX_PROJECT_ID / WATSONX_URL / WATSONX_MODEL_ID
 - CEREBRAS_API_KEY / CEREBRAS_MODEL_ID / CEREBRAS_BASE_URL
 - NVIDIA_API_KEY / NVIDIA_MODEL_ID / NVIDIA_BASE_URL
 - CHUTES_API_KEY / CHUTES_MODEL_ID / CHUTES_BASE_URL
+- FEATHERLESS_API_KEY / FEATHERLESS_MODEL_ID / FEATHERLESS_BASE_URL
 - ORCHESTRATOR_PRIMARY / ORCHESTRATOR_FALLBACK
 - MEDICAL_EXPERT_PRIMARY / MEDICAL_EXPERT_FALLBACK
 """
@@ -44,6 +45,9 @@ _DEFAULT_NVIDIA_URL = "https://integrate.api.nvidia.com/v1"
 _DEFAULT_CHUTES_MODEL = "moonshotai/Kimi-K2.5-TEE"
 _DEFAULT_CHUTES_URL = "https://llm.chutes.ai/v1"
 
+_DEFAULT_FEATHERLESS_MODEL = "moonshotai/Kimi-K2.5"
+_DEFAULT_FEATHERLESS_URL = "https://api.featherless.ai/v1"
+
 
 class Provider(str, Enum):
     ANTHROPIC = "anthropic"
@@ -51,6 +55,7 @@ class Provider(str, Enum):
     CEREBRAS = "cerebras"
     NVIDIA = "nvidia"
     CHUTES = "chutes"
+    FEATHERLESS = "featherless"
 
 
 class Role(str, Enum):
@@ -131,12 +136,22 @@ def _chutes() -> LLMSettings:
     )
 
 
+def _featherless() -> LLMSettings:
+    return LLMSettings(
+        provider=Provider.FEATHERLESS,
+        model_id=os.getenv("FEATHERLESS_MODEL_ID", _DEFAULT_FEATHERLESS_MODEL),
+        api_key=os.getenv("FEATHERLESS_API_KEY"),
+        base_url=os.getenv("FEATHERLESS_BASE_URL", _DEFAULT_FEATHERLESS_URL),
+    )
+
+
 _BUILDERS = {
     Provider.ANTHROPIC: _anthropic,
     Provider.WATSONX: _watsonx,
     Provider.CEREBRAS: _cerebras,
     Provider.NVIDIA: _nvidia,
     Provider.CHUTES: _chutes,
+    Provider.FEATHERLESS: _featherless,
 }
 
 

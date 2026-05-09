@@ -86,8 +86,9 @@ async def main() -> None:
     agent.emitter.match("agent.requirement.start", on_iter_start)
 
     prompt = (
-        "Get patient seed-001, then call predict_diabetes_risk on it, "
-        "then consult the medical expert."
+        "Get patient seed-001, consult the medical expert for pre-ML context, "
+        "then call predict_diabetes_risk if the data is sufficient, then consult "
+        "the medical expert again with the ML result."
     )
     print(f"[diag] prompt: {prompt}\n", flush=True)
 
