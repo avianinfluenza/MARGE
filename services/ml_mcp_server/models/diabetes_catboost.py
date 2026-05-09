@@ -60,7 +60,7 @@ class DiabetesCATBoost(MLModel):
             "DiabetesInputs",
             **{
                 name: (
-                    float,
+                    float | None,
                     Field(description=_FEATURE_DESCRIPTIONS.get(name, name)),
                 )
                 for name in self._feature_names
@@ -94,7 +94,10 @@ class DiabetesCATBoost(MLModel):
 
     def predict(self, inputs: BaseModel) -> Prediction:
         data = inputs.model_dump()
-        X = np.array([[data[name] for name in self._feature_names]])
+        X = np.array(
+            [[np.nan if data[name] is None else data[name] for name in self._feature_names]],
+            dtype=float,
+        )   
 
         proba = self._model.predict_proba(X)[0]
         # CatBoost / sklearn convention: positive class index = 1.
