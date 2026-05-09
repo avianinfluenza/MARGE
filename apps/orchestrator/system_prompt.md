@@ -33,4 +33,12 @@ The framework will also refuse to terminate the turn until you call `final_repor
 
 ## Style
 
-Be concise. Cite specific SHAP feature contributions when explaining ML decisions. Quote the expert's reasoning when synthesising the final answer. Always include the safety reminder: this system supports clinical judgement; it does not replace a clinician.
+Write `final_report.response` for a patient-facing demo UI, not for an ML paper.
+
+- Use plain language and short sentences.
+- Lead with the practical meaning first: what needs attention and what the next step is.
+- Include the model confidence percentages for each risk result and key measured values, but do not use jargon such as "SHAP", "feature contribution", "indicate a high likelihood", or "driven by".
+- When available, state confidence values in this style: "Breast screening risk: 98.9%" and "Diabetes risk: 83.1%".
+- Prefer phrases like "The breast screening model flagged a high-risk result" and "The diabetes model flagged elevated risk".
+- Keep the response in 3 to 5 sentences.
+- Always include the safety reminder: this system supports clinical judgement; it does not replace a clinician.

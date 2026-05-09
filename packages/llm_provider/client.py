@@ -89,13 +89,22 @@ def _build_openai_compat(s: LLMSettings, key_var: str) -> "ChatModel":
     # and Chutes do not honour `tool_choice={"required"}`; BeeAI's default
     # raises if it asks for a tool call and the model returns plain text.
     # Restricting to {"auto","single","none"} lets BeeAI plan around it.
-    return cls(
+    model = cls(
         model_id=s.model_id,
         api_key=s.api_key,
         base_url=s.base_url,
         tool_call_fallback_via_response_format=False,
         tool_choice_support={"auto", "single", "none"},
     )
+    # BeeAI 0.1.79 keeps tool_choice_support as a class-level default for the
+    # OpenAI-compatible adapter, so the constructor argument above may not
+    # override it everywhere the runner consults the setting. Force the
+    # provider-safe set on both the instance and the concrete class to prevent
+    # tool_choice={"required"} calls against providers that do not support it.
+    provider_safe_tool_choices = {"auto", "single", "none"}
+    model.tool_choice_support = provider_safe_tool_choices
+    type(model).tool_choice_support = provider_safe_tool_choices
+    return model
 
 
 def _make_throttled_chat_model_cls(base_cls, min_gap_seconds: float):

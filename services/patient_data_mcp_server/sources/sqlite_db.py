@@ -28,14 +28,14 @@ def _breast_cancer_features() -> dict[str, float]:
 # OpenML fetch at import time (the same row the diabetes_catboost model uses
 # as `sample_inputs()`).
 _PIMA_FIRST_ROW: dict[str, float] = {
-    "preg": 6.0,
-    "plas": 148.0,
-    "pres": 72.0,
-    "skin": 35.0,
-    "insu": 0.0,
-    "mass": 33.6,
-    "pedi": 0.627,
-    "age": 50.0,
+    "preg": float("nan"),
+    "plas": float("nan"),
+    "pres": float("nan"),
+    "skin": float("nan"),
+    "insu": float("nan"),
+    "mass": float("nan"),
+    "pedi": float("nan"),
+    "age": float("nan"),
 }
 
 
