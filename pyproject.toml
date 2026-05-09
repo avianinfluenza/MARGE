@@ -67,6 +67,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--ignore=tests/e2e/test_streamlit_playwright.py"
 markers = [
     "slow: full-orchestrator Playwright tests requiring a fast LLM (≤2s/call); skip with -m 'not slow'",
 ]

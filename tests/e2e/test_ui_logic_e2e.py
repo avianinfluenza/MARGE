@@ -1,160 +1,24 @@
 """E2E: Streamlit UI pure-Python logic — no browser required.
 
 Tests the stateless helper functions in apps/streamlit_ui/app.py:
-feature extraction from text, missing-field detection, metric parsing,
-report section splitting, and number highlighting.
+metric parsing, report section splitting, number highlighting, and
+result text extraction.
 
 These run without launching a Streamlit server or a real LLM.
+Note: feature extraction helpers were removed in the patient-MCP refactor;
+      those responsibilities now live inside the orchestrator agent itself.
 """
-
-import math
 
 import pytest
 
-# Import individual helpers (not the Streamlit rendering layer)
 from apps.streamlit_ui.app import (
-    DIABETES_FEATURE_INFO,
-    DIABETES_FEATURES,
-    KEY_DIABETES_FEATURES,
-    _coerce_optional_float,
-    _extract_json_object,
     _extract_metrics,
-    _has_enough_diabetes_data,
     _highlight_numbers,
-    _is_missing,
-    _missing_diabetes_fields,
-    _regex_feature_fallback,
     _report_sections,
-    _risk_tone,
     _result_text,
+    _risk_tone,
     _split_sentences,
 )
-from packages.schemas.patient import PatientRecord
-
-
-# ---------------------------------------------------------------------------
-# _coerce_optional_float
-# ---------------------------------------------------------------------------
-
-class TestCoerceOptionalFloat:
-    def test_none_returns_none(self):
-        assert _coerce_optional_float(None) is None
-
-    def test_empty_string_returns_none(self):
-        assert _coerce_optional_float("") is None
-
-    def test_nan_returns_none(self):
-        assert _coerce_optional_float(float("nan")) is None
-
-    def test_valid_float(self):
-        assert _coerce_optional_float(3.14) == pytest.approx(3.14)
-
-    def test_valid_string_float(self):
-        assert _coerce_optional_float("42.5") == pytest.approx(42.5)
-
-    def test_invalid_string_returns_none(self):
-        assert _coerce_optional_float("abc") is None
-
-
-# ---------------------------------------------------------------------------
-# _extract_json_object
-# ---------------------------------------------------------------------------
-
-class TestExtractJsonObject:
-    def test_extracts_embedded_json(self):
-        text = 'Here is the result: {"age": 30, "plas": 120} done.'
-        result = _extract_json_object(text)
-        assert result == {"age": 30, "plas": 120}
-
-    def test_returns_empty_dict_when_no_json(self):
-        assert _extract_json_object("no json here") == {}
-
-    def test_returns_empty_dict_for_invalid_json(self):
-        assert _extract_json_object("{invalid}") == {}
-
-    def test_returns_empty_dict_for_non_dict_json(self):
-        assert _extract_json_object("[1, 2, 3]") == {}
-
-
-# ---------------------------------------------------------------------------
-# _regex_feature_fallback
-# ---------------------------------------------------------------------------
-
-class TestRegexFeatureFallback:
-    def test_extracts_age_from_english(self):
-        result = _regex_feature_fallback("I am 45 years old")
-        assert result.get("age") == 45.0
-
-    def test_extracts_glucose(self):
-        result = _regex_feature_fallback("blood sugar is 130 mg/dL")
-        assert result.get("plas") == 130.0
-
-    def test_extracts_bmi(self):
-        result = _regex_feature_fallback("BMI 27.5")
-        assert result.get("mass") == 27.5
-
-    def test_extracts_blood_pressure(self):
-        result = _regex_feature_fallback("blood pressure 120/80")
-        assert result.get("pres") == 80.0
-
-    def test_extracts_insulin(self):
-        result = _regex_feature_fallback("insulin level 85")
-        assert result.get("insu") == 85.0
-
-    def test_empty_message_returns_empty_dict(self):
-        assert _regex_feature_fallback("") == {}
-
-    def test_unrelated_message_returns_empty_dict(self):
-        assert _regex_feature_fallback("I feel great today") == {}
-
-
-# ---------------------------------------------------------------------------
-# _is_missing / _missing_diabetes_fields / _has_enough_diabetes_data
-# ---------------------------------------------------------------------------
-
-def _make_record(features: dict) -> PatientRecord:
-    return PatientRecord(
-        handle="test-001",
-        age=40,
-        sex="female",
-        features=features,
-        notes="test",
-    )
-
-
-class TestMissingFieldDetection:
-    def test_none_is_missing(self):
-        assert _is_missing(None)
-
-    def test_nan_is_missing(self):
-        assert _is_missing(float("nan"))
-
-    def test_zero_is_not_missing(self):
-        assert not _is_missing(0.0)
-
-    def test_missing_diabetes_fields_all_absent(self):
-        record = _make_record({})
-        missing = _missing_diabetes_fields(record)
-        assert set(missing) == set(DIABETES_FEATURES)
-
-    def test_missing_diabetes_fields_some_present(self):
-        record = _make_record({"plas": 120.0, "age": 35.0})
-        missing = _missing_diabetes_fields(record)
-        assert "plas" not in missing
-        assert "age" not in missing
-        assert len(missing) == len(DIABETES_FEATURES) - 2
-
-    def test_has_enough_data_with_two_key_features(self):
-        record = _make_record({"plas": 120.0, "age": 35.0})
-        assert _has_enough_diabetes_data(record)
-
-    def test_not_enough_data_with_one_key_feature(self):
-        record = _make_record({"plas": 120.0})
-        assert not _has_enough_diabetes_data(record)
-
-    def test_not_enough_data_with_no_key_features(self):
-        record = _make_record({"preg": 2.0, "skin": 20.0})
-        assert not _has_enough_diabetes_data(record)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +112,24 @@ class TestHighlightNumbers:
 
 
 # ---------------------------------------------------------------------------
-# _result_text — extracts text from varied BeeAI result shapes
+# _split_sentences
+# ---------------------------------------------------------------------------
+
+class TestSplitSentences:
+    def test_splits_on_period(self):
+        parts = _split_sentences("First sentence. Second sentence.")
+        assert len(parts) == 2
+
+    def test_splits_on_exclamation(self):
+        parts = _split_sentences("Alert! Be careful.")
+        assert len(parts) == 2
+
+    def test_empty_string_returns_empty_list(self):
+        assert _split_sentences("") == []
+
+
+# ---------------------------------------------------------------------------
+# _result_text
 # ---------------------------------------------------------------------------
 
 class TestResultText:
@@ -277,20 +158,3 @@ class TestResultText:
             answer = Answer()
 
         assert _result_text(FakeResult()) == "answer text"
-
-
-# ---------------------------------------------------------------------------
-# DIABETES_FEATURE_INFO completeness
-# ---------------------------------------------------------------------------
-
-class TestFeatureInfoCompleteness:
-    def test_all_eight_features_documented(self):
-        assert set(DIABETES_FEATURE_INFO.keys()) == set(DIABETES_FEATURES)
-
-    def test_all_key_features_are_valid(self):
-        assert KEY_DIABETES_FEATURES <= set(DIABETES_FEATURES)
-
-    def test_each_feature_has_label_and_detail(self):
-        for feature, info in DIABETES_FEATURE_INFO.items():
-            assert "label" in info, f"{feature} missing label"
-            assert "detail" in info, f"{feature} missing detail"

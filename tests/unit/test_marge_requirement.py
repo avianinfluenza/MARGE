@@ -58,7 +58,7 @@ class TestHasAnyMLPrediction:
 
     def test_ignores_non_predict_tools(self):
         assert not has_any_ml_prediction(
-            _state("get_patient_history", "consult_medical_expert")
+            _state("get_patient", "consult_medical_expert")
         )
 
     def test_ignores_failed_steps(self):
@@ -76,7 +76,7 @@ class TestHasConsultedExpert:
 
     def test_does_not_match_other_tools(self):
         assert not has_consulted_expert(
-            _state("predict_breast_cancer_malignancy", "get_patient_history")
+            _state("predict_breast_cancer_malignancy", "get_patient")
         )
 
     def test_ignores_failed_step(self):

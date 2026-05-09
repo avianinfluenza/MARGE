@@ -20,7 +20,7 @@ from services.ml_mcp_server.registry import discover_models
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
+@pytest.fixture()
 def models():
     return {m.name: m for m in discover_models()}
 
