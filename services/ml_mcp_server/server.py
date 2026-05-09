@@ -19,8 +19,11 @@ def _register(mcp: FastMCP, model: MLModel) -> None:
     """Register one MLModel as an MCP tool with proper input/output schemas."""
     input_cls = model.input_schema
 
-    def tool_fn(inputs: input_cls) -> Prediction:  # type: ignore[valid-type]
-        return model.predict(inputs)
+    def tool_fn(inputs: input_cls) -> Any:  # type: ignore[valid-type]
+        from pydantic import TypeAdapter
+        result = model.predict(inputs)
+        # Ensure NaNs are converted to nulls for valid MCP JSON output
+        return TypeAdapter(Prediction).dump_python(result, mode="json")
 
     tool_fn.__name__ = model.name
     tool_fn.__doc__ = model.metadata.description
