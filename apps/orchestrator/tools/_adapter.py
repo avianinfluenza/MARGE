@@ -16,7 +16,6 @@ so we just wrap the return value as `JSONToolOutput`.
 """
 
 import functools
-import inspect
 from collections.abc import Callable
 from types import ModuleType
 from typing import TYPE_CHECKING, Any
@@ -24,8 +23,10 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 
 from apps.orchestrator.tools import (
+    abstain as _ab,
+    clinical_report as _cr,
     consult_expert as _ce,
-    final_report as _fr,
+    request_more_info as _rmi,
 )
 
 if TYPE_CHECKING:
@@ -37,7 +38,8 @@ if TYPE_CHECKING:
 # Order is the order the LLM will see them in tool listings.
 # Patient tools (list_patients, get_patient, update_patient) come from the
 # patient-data MCP server and are not listed here.
-LOCAL_TOOL_MODULES: tuple[ModuleType, ...] = (_ce, _fr)
+# Casual chat is plain natural-language content (no tool) — see system_prompt.md.
+LOCAL_TOOL_MODULES: tuple[ModuleType, ...] = (_ce, _rmi, _cr, _ab)
 
 
 def _to_tool_output(result: Any) -> Any:
@@ -58,18 +60,22 @@ def to_beeai_tool(
 ) -> "Tool":
     """Wrap a Python callable + Pydantic input schema as a BeeAI Tool.
 
-    The wrapped callable must accept the same parameter names as the schema
-    fields (BeeAI introspects the signature). Its return value is coerced
-    to `JSONToolOutput`.
+    Sync and async callables are both supported. Returns are coerced to
+    `JSONToolOutput`.
     """
+    import inspect as _inspect
+
     from beeai_framework.tools import tool
 
-    @functools.wraps(fn)
-    async def output_wrapped(*args: Any, **kwargs: Any) -> Any:
-        result = fn(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
-        return _to_tool_output(result)
+    if _inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def output_wrapped(*args: Any, **kwargs: Any) -> Any:
+            result = await fn(*args, **kwargs)
+            return _to_tool_output(result)
+    else:
+        @functools.wraps(fn)
+        def output_wrapped(*args: Any, **kwargs: Any) -> Any:
+            return _to_tool_output(fn(*args, **kwargs))
 
     decorator = tool(name=name, description=description, input_schema=input_schema)
     return decorator(output_wrapped)

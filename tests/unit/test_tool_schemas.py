@@ -1,33 +1,19 @@
-"""Tests for the per-tool Pydantic input schemas.
+"""Tests for the per-tool Pydantic input schemas (4 local tools).
 
-Three local tools after the single-terminal refactor: each module exports
-a `ToolInput` Pydantic class plus `TOOL_NAME` and `TOOL_DESCRIPTION`
-module constants. These are consumed by the BeeAI adapter to build
-properly-typed BeeAI Tools.
+Casual chat is natural-language content with no tool call (hybrid
+pattern — see apps/orchestrator/system_prompt.md), so there is no
+update_user / conversational_reply schema to verify.
 """
 
 import pytest
 from pydantic import ValidationError
 
 from apps.orchestrator.tools import (
+    abstain as ab_mod,
+    clinical_report as cr_mod,
     consult_expert as ce_mod,
-    final_report as fr_mod,
-    patient_history as ph_mod,
+    request_more_info as rmi_mod,
 )
-
-
-class TestPatientHistorySchema:
-    def test_constants_exposed(self):
-        assert ph_mod.TOOL_NAME == "get_patient_history"
-        assert ph_mod.TOOL_DESCRIPTION
-
-    def test_accepts_handle(self):
-        obj = ph_mod.ToolInput(handle="seed-001")
-        assert obj.handle == "seed-001"
-
-    def test_rejects_missing_handle(self):
-        with pytest.raises(ValidationError):
-            ph_mod.ToolInput()
 
 
 class TestConsultExpertSchema:
@@ -45,15 +31,56 @@ class TestConsultExpertSchema:
         assert obj.findings == {}
 
 
-class TestFinalReportSchema:
+class TestRequestMoreInfoSchema:
     def test_constants_exposed(self):
-        assert fr_mod.TOOL_NAME == "final_report"
-        assert fr_mod.TOOL_DESCRIPTION
+        assert rmi_mod.TOOL_NAME == "request_more_info"
+        assert rmi_mod.TOOL_DESCRIPTION
 
-    def test_accepts_response(self):
-        obj = fr_mod.ToolInput(response="Recommendation: X")
-        assert obj.response == "Recommendation: X"
+    def test_accepts_needed_and_rationale(self):
+        obj = rmi_mod.ToolInput(
+            needed=[{"name": "HbA1c", "why": "confirm diabetes"}],
+            rationale="HbA1c clarifies the diabetes risk estimate.",
+        )
+        assert obj.needed[0].name == "HbA1c"
+        assert obj.needed[0].field_type == "text"  # default
 
-    def test_rejects_missing_response(self):
+    def test_rejects_missing_rationale(self):
         with pytest.raises(ValidationError):
-            fr_mod.ToolInput()
+            rmi_mod.ToolInput(needed=[])
+
+
+class TestClinicalReportSchema:
+    def test_constants_exposed(self):
+        assert cr_mod.TOOL_NAME == "clinical_report"
+        assert cr_mod.TOOL_DESCRIPTION
+
+    def test_accepts_full_payload(self):
+        obj = cr_mod.ToolInput(
+            summary="High diabetes risk.",
+            recommendation="Refer for confirmation.",
+            confidence="high",
+            evidence=[{
+                "model": "predict_diabetes_risk",
+                "predicted_class": "diabetic_risk",
+                "confidence": 0.85,
+                "top_features": [],
+            }],
+            expert_quote="HbA1c at threshold.",
+        )
+        assert obj.confidence == "high"
+        assert obj.evidence[0].model == "predict_diabetes_risk"
+
+    def test_confidence_must_be_one_of_three(self):
+        with pytest.raises(ValidationError):
+            cr_mod.ToolInput(summary="s", recommendation="r", confidence="absolute")
+
+
+class TestAbstainSchema:
+    def test_constants_exposed(self):
+        assert ab_mod.TOOL_NAME == "abstain"
+        assert ab_mod.TOOL_DESCRIPTION
+
+    def test_accepts_reason(self):
+        obj = ab_mod.ToolInput(reason="Models conflict.")
+        assert obj.reason == "Models conflict."
+        assert obj.fallback_recommendation  # default present

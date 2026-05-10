@@ -1,90 +1,100 @@
-"""Tests for the orchestrator's local tool factories."""
+"""Tests for the orchestrator's local tool factories.
+
+Four local tools after the hybrid refactor:
+- consult_expert     — sub-agent invocation; records call
+- request_more_info  — terminal, free; records call
+- clinical_report    — terminal, gated by Requirement; records call (no in-tool gate)
+- abstain            — terminal, gated by Requirement; records call
+
+Casual chat is plain natural-language `content` from the LLM (no tool
+call) — there is no longer an `update_user` or `conversational_reply`
+tool. Gating is enforced LLM-side by `MARGEProtocolRequirement` (tested
+in test_marge_requirement.py).
+"""
 
 import pytest
 
 from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
+from apps.orchestrator.tools.abstain import make_abstain
+from apps.orchestrator.tools.clinical_report import make_clinical_report
 from apps.orchestrator.tools.consult_expert import make_consult_expert
-from apps.orchestrator.tools.final_report import make_final_report
-from apps.orchestrator.tools.patient_history import make_patient_history
-from packages.schemas.patient import PatientRecord
+from apps.orchestrator.tools.request_more_info import make_request_more_info
 from packages.schemas.retrieval import MedicalExpertResponse
 from services.medical_expert_agent.agent import StubMedicalExpert
-from services.patient_data_mcp_server.sources.csv_ingest import seed_demo_db
-from services.patient_data_mcp_server.sources.sqlite_db import SqlitePatientSource
-
-
-@pytest.fixture()
-def demo_source(tmp_path):
-    db = tmp_path / "test.db"
-    seed_demo_db(db)
-    return SqlitePatientSource(db)
 
 
 class TestConsultExpertTool:
-    def test_returns_medical_expert_response(self):
+    @pytest.mark.asyncio
+    async def test_returns_medical_expert_response(self):
         enforcer = ProtocolEnforcer()
         consult = make_consult_expert(StubMedicalExpert(), enforcer)
-        response = consult(question="What does this suggest?", findings={"a": 1})
+        response = await consult(question="What does this suggest?", findings={"a": 1})
         assert isinstance(response, MedicalExpertResponse)
 
-    def test_records_consult_medical_expert_call(self):
+    @pytest.mark.asyncio
+    async def test_records_consult_medical_expert_call(self):
         enforcer = ProtocolEnforcer()
         consult = make_consult_expert(StubMedicalExpert(), enforcer)
-        consult(question="?", findings={})
+        await consult(question="?", findings={})
         assert enforcer.has_called("consult_medical_expert")
 
 
-class TestPatientHistoryTool:
-    def test_returns_patient_record(self, demo_source):
+class TestRequestMoreInfoTool:
+    def test_returns_structured_payload(self):
         enforcer = ProtocolEnforcer()
-        get_history = make_patient_history(demo_source, enforcer)
-        record = get_history(handle="seed-001")
-        assert isinstance(record, PatientRecord)
-        assert record.handle == "seed-001"
+        ask = make_request_more_info(enforcer)
+        out = ask(
+            needed=[{"name": "HbA1c", "why": "diabetes confirm",
+                     "field_type": "number", "unit": "%"}],
+            rationale="Refines diabetes risk",
+        )
+        assert out["needs_more_info"] is True
+        assert out["needed"][0]["name"] == "HbA1c"
+        assert out["rationale"] == "Refines diabetes risk"
 
-    def test_records_get_patient_history_call(self, demo_source):
+    def test_records_call(self):
         enforcer = ProtocolEnforcer()
-        get_history = make_patient_history(demo_source, enforcer)
-        get_history(handle="seed-001")
-        assert enforcer.has_called("get_patient_history")
+        ask = make_request_more_info(enforcer)
+        ask(needed=[], rationale="x")
+        assert enforcer.has_called("request_more_info")
 
-    def test_propagates_keyerror_for_unknown_handle(self, demo_source):
+
+class TestClinicalReportTool:
+    def test_returns_structured_report(self):
         enforcer = ProtocolEnforcer()
-        get_history = make_patient_history(demo_source, enforcer)
-        with pytest.raises(KeyError):
-            get_history(handle="seed-9999")
+        report = make_clinical_report(enforcer)
+        out = report(
+            summary="High diabetes risk.",
+            recommendation="See PCP for HbA1c repeat.",
+            confidence="high",
+            evidence=[{"model": "predict_diabetes_risk",
+                       "predicted_class": "diabetic_risk",
+                       "confidence": 0.85, "top_features": []}],
+            expert_quote="HbA1c 6.5% meets ADA criteria.",
+        )
+        assert out["summary"] == "High diabetes risk."
+        assert out["confidence"] == "high"
+        assert out["evidence"][0]["model"] == "predict_diabetes_risk"
+        assert "clinician" in out["safety_note"]
 
-
-class TestFinalReportTool:
-    def test_allows_missing_info_response_without_ml(self):
+    def test_records_call(self):
         enforcer = ProtocolEnforcer()
-        enforcer.record("consult_medical_expert")
-        final = make_final_report(enforcer)
-        result = final(response="Please provide age, BMI, and blood sugar.")
-        assert result == {"response": "Please provide age, BMI, and blood sugar."}
+        report = make_clinical_report(enforcer)
+        report(summary="x", recommendation="y", confidence="medium")
+        assert enforcer.has_called("clinical_report")
 
-    def test_allows_response_without_expert_for_no_data_turn(self):
+
+class TestAbstainTool:
+    def test_returns_abstention_payload(self):
         enforcer = ProtocolEnforcer()
-        final = make_final_report(enforcer)
-        result = final(response="I need medical measurements before risk scoring.")
-        assert result == {"response": "I need medical measurements before risk scoring."}
+        abst = make_abstain(enforcer)
+        out = abst(reason="Symptoms outside ML scope.")
+        assert out["abstained"] is True
+        assert "scope" in out["reason"]
+        assert out["fallback_recommendation"]
 
-    def test_succeeds_when_workflow_sequence_called(self):
+    def test_records_call(self):
         enforcer = ProtocolEnforcer()
-        enforcer.record("consult_medical_expert")
-        enforcer.record("predict_breast_cancer_malignancy")
-        enforcer.record("consult_medical_expert")
-        final = make_final_report(enforcer)
-        result = final(response="High-confidence findings; refer for biopsy.")
-        assert result == {"response": "High-confidence findings; refer for biopsy."}
-
-    def test_records_final_report_call(self):
-        enforcer = ProtocolEnforcer()
-        final = make_final_report(enforcer)
-        final(response="All clear.")
-        assert enforcer.has_called("final_report")
-
-    def test_returns_response_dict(self):
-        final = make_final_report(ProtocolEnforcer())
-        result = final(response="All clear.")
-        assert result == {"response": "All clear."}
+        abst = make_abstain(enforcer)
+        abst(reason="x")
+        assert enforcer.has_called("abstain")

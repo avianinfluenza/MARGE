@@ -1,77 +1,94 @@
-"""Web search tool for the medical expert agent.
+"""Expert-only live medical web search tool.
 
-This is intentionally a thin Tavily-backed retriever that returns the shared
-`RetrievedDocument` shape. The expert agent can inject these documents into
-its prompt as RAG context and cite them in `MedicalExpertResponse`.
+The orchestrator never imports this module. It is wired only inside
+`MedicalExpertAgent`, so any `search_medical_web` call in the trace proves the
+expert model initiated the retrieval step.
 """
+
+from __future__ import annotations
 
 import os
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from packages.schemas.retrieval import RetrievedDocument
 
-DEFAULT_MAX_RESULTS = 3
+TOOL_NAME = "search_medical_web"
+TOOL_DESCRIPTION = (
+    "Search the live web for current, citable medical guidance. Use this before "
+    "making guideline, diagnostic-threshold, treatment, or quantitative clinical "
+    "claims. Prefer authoritative sources such as ADA, CDC, WHO, NICE, USPSTF, "
+    "NIH, and peer-reviewed clinical references."
+)
 
 
-def search_web(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> list[RetrievedDocument]:
-    """Search the web for medical context using Tavily.
+class ToolInput(BaseModel):
+    query: str = Field(
+        description=(
+            "Focused medical search query, including the condition, value, "
+            "threshold, or guideline body when relevant."
+        )
+    )
+    max_results: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Maximum number of web results to return.",
+    )
 
-    Returns an empty list when web RAG is not configured. This keeps the
-    medical expert usable in local/test environments that do not have Tavily
-    credentials or the optional `medical-kb` dependencies installed.
+
+async def search_medical_web(query: str, max_results: int = 3) -> dict[str, Any]:
+    """Run a Tavily-backed web search and return normalized retrieval docs.
+
+    Missing optional setup is returned as a warning instead of raising so the
+    expert consultation can still complete while the trace clearly shows that
+    web search was attempted but not configured.
     """
-    query = query.strip()
-    if not query:
-        return []
 
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key = os.getenv("TAVILY_API_KEY") or os.getenv("MEDICAL_WEB_SEARCH_API_KEY")
     if not api_key:
-        return []
+        return {
+            "query": query,
+            "documents": [],
+            "warning": "TAVILY_API_KEY is not set; live web search was not executed.",
+        }
 
     try:
         from tavily import TavilyClient
     except ImportError:
-        return []
+        return {
+            "query": query,
+            "documents": [],
+            "warning": (
+                "tavily-python is not installed. Install the medical-kb extra "
+                "to enable live web search."
+            ),
+        }
 
     client = TavilyClient(api_key=api_key)
-    try:
-        response = client.search(
-            query=query,
-            search_depth=os.getenv("TAVILY_SEARCH_DEPTH", "basic"),
-            max_results=max_results,
-            include_answer=False,
+    raw = client.search(
+        query=query,
+        max_results=max_results,
+        search_depth="basic",
+        include_answer=False,
+    )
+
+    documents: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw.get("results", [])[:max_results], start=1):
+        score = item.get("score")
+        try:
+            score_value = float(score) if score is not None else float(idx)
+        except (TypeError, ValueError):
+            score_value = float(idx)
+
+        doc = RetrievedDocument(
+            title=str(item.get("title") or "Untitled medical web result"),
+            snippet=str(item.get("content") or item.get("snippet") or ""),
+            source_url=item.get("url"),
+            retrieval_source="web",
+            score=score_value,
         )
-    except Exception:
-        return []
+        documents.append(doc.model_dump(mode="json"))
 
-    results = response.get("results", []) if isinstance(response, dict) else []
-    documents: list[RetrievedDocument] = []
-    for index, item in enumerate(results):
-        if not isinstance(item, dict):
-            continue
-
-        title = str(item.get("title") or item.get("url") or f"Web result {index + 1}")
-        snippet = str(item.get("content") or item.get("snippet") or item.get("raw_content") or "")
-        source_url = item.get("url")
-        score = _coerce_score(item.get("score"))
-
-        documents.append(
-            RetrievedDocument(
-                title=title,
-                snippet=snippet or title,
-                source_url=str(source_url) if source_url else None,
-                retrieval_source="web",
-                score=score,
-            )
-        )
-
-    return documents
-
-
-def _coerce_score(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return {"query": query, "documents": documents, "warning": None}

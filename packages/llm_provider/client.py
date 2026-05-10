@@ -30,11 +30,43 @@ if TYPE_CHECKING:
 # Min seconds between consecutive requests per provider (free tier).
 # Cerebras 30 RPM nominal but in practice the new-account quota appears
 # tighter — bumped to 4.0s. NVIDIA NIM 40 RPM = 1.5s; padded to 1.7s.
+# Featherless free tier allows only 1 concurrent request — overlapping
+# calls return 429 immediately. Throttle ensures serialization across
+# orchestrator + expert (both use this provider in the default .env).
 _THROTTLE_SECONDS = {
     Provider.CEREBRAS: 4.0,
     Provider.NVIDIA: 1.7,
     Provider.CHUTES: 0.0,  # account-based; throttling moot until credits added
+    Provider.FEATHERLESS: 1.0,
 }
+
+# Per-(provider, api_key) shared throttle state. Two ChatModel instances
+# only share a throttle when they hit the same provider AND use the same
+# API key — that matches how upstream concurrency quotas are scoped.
+# This lets two roles use the same provider with separate keys (e.g.,
+# orchestrator + expert both on Featherless but with their own keys) and
+# run truly concurrently instead of serializing on a shared lock.
+_PROVIDER_THROTTLE_STATE: dict = {}
+
+
+def _get_provider_throttle(provider: "Provider", api_key: str | None, min_gap: float):
+    """Return a shared (last_time, lock) tuple per (provider, api_key).
+
+    Lock is held through the actual API call so concurrent calls from
+    different ChatModel instances using the same provider+key are
+    serialized end-to-end. Different keys for the same provider get
+    separate locks → independent quota.
+    """
+    import asyncio as _asyncio
+
+    state_key = (provider, api_key or "default")
+    if state_key not in _PROVIDER_THROTTLE_STATE:
+        _PROVIDER_THROTTLE_STATE[state_key] = {
+            "last_time": [0.0],
+            "lock": _asyncio.Lock(),
+            "min_gap": min_gap,
+        }
+    return _PROVIDER_THROTTLE_STATE[state_key]
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +110,12 @@ def _build_openai_compat(s: LLMSettings, key_var: str) -> "ChatModel":
     from beeai_framework.adapters.openai.backend.chat import OpenAIChatModel
 
     throttle = _THROTTLE_SECONDS.get(s.provider, 0.0)
-    cls = _make_throttled_chat_model_cls(OpenAIChatModel, throttle) if throttle > 0 else OpenAIChatModel
+    if throttle > 0:
+        cls = _make_throttled_chat_model_cls(
+            OpenAIChatModel, throttle, s.provider, s.api_key
+        )
+    else:
+        cls = OpenAIChatModel
 
     # NOTE 1: tool_call_fallback_via_response_format=False forces BeeAI to
     # send native OpenAI `tools` instead of a `response_format=json_schema`
@@ -89,12 +126,19 @@ def _build_openai_compat(s: LLMSettings, key_var: str) -> "ChatModel":
     # and Chutes do not honour `tool_choice={"required"}`; BeeAI's default
     # raises if it asks for a tool call and the model returns plain text.
     # Restricting to {"auto","single","none"} lets BeeAI plan around it.
+    #
+    # NOTE 3: ignore_parallel_tool_calls=True silently drops extra tool
+    # calls when a model returns multiple in one response (Kimi K2.5 on
+    # Featherless does this). MARGE's MARGEProtocolRequirement evaluates
+    # gate state per iteration, so parallel calls would bypass the
+    # ML-after-expert ordering — sequential is the design.
     model = cls(
         model_id=s.model_id,
         api_key=s.api_key,
         base_url=s.base_url,
         tool_call_fallback_via_response_format=False,
         tool_choice_support={"auto", "single", "none"},
+        ignore_parallel_tool_calls=True,
     )
     # BeeAI 0.1.79 keeps tool_choice_support as a class-level default for the
     # OpenAI-compatible adapter, so the constructor argument above may not
@@ -107,32 +151,46 @@ def _build_openai_compat(s: LLMSettings, key_var: str) -> "ChatModel":
     return model
 
 
-def _make_throttled_chat_model_cls(base_cls, min_gap_seconds: float):
-    """Return a subclass of `base_cls` that sleeps to enforce a min inter-call gap.
+def _make_throttled_chat_model_cls(
+    base_cls, min_gap_seconds: float, provider: "Provider", api_key: str | None
+):
+    """Return a subclass of `base_cls` that serializes calls per (provider, api_key).
 
-    Works for any LiteLLM-backed BeeAI ChatModel — overrides the inner
-    `_create` and `_create_stream` async methods, which are the actual
-    network entry points.
+    The lock + last-call timestamp are shared across every ChatModel
+    instance built for the same provider AND same api_key. Two roles on
+    the same provider but with separate API keys get independent locks
+    and run concurrently — matching how upstream quotas are scoped.
+
+    The lock is held through the actual API call so concurrent requests
+    from different ChatModel instances using the same key never overlap
+    on the wire (required for free-tier providers like Featherless that
+    only allow 1 concurrent request per key and otherwise return HTTP 429).
     """
-    last_call_time = [0.0]
-    lock = asyncio.Lock()
-
-    async def _sleep_if_needed() -> None:
-        async with lock:
-            elapsed = time.monotonic() - last_call_time[0]
-            if elapsed < min_gap_seconds:
-                await asyncio.sleep(min_gap_seconds - elapsed)
-            last_call_time[0] = time.monotonic()
+    state = _get_provider_throttle(provider, api_key, min_gap_seconds)
+    last_call_time = state["last_time"]
+    lock = state["lock"]
 
     class ThrottledChatModel(base_cls):  # type: ignore[misc, valid-type]
         async def _create(self, input, run):  # type: ignore[override]
-            await _sleep_if_needed()
-            return await super()._create(input, run)
+            async with lock:
+                elapsed = time.monotonic() - last_call_time[0]
+                if elapsed < min_gap_seconds:
+                    await asyncio.sleep(min_gap_seconds - elapsed)
+                try:
+                    return await super()._create(input, run)
+                finally:
+                    last_call_time[0] = time.monotonic()
 
         async def _create_stream(self, input, _):  # type: ignore[override]
-            await _sleep_if_needed()
-            async for out in super()._create_stream(input, _):
-                yield out
+            async with lock:
+                elapsed = time.monotonic() - last_call_time[0]
+                if elapsed < min_gap_seconds:
+                    await asyncio.sleep(min_gap_seconds - elapsed)
+                try:
+                    async for out in super()._create_stream(input, _):
+                        yield out
+                finally:
+                    last_call_time[0] = time.monotonic()
 
     ThrottledChatModel.__name__ = f"Throttled{base_cls.__name__}"
     ThrottledChatModel.__qualname__ = ThrottledChatModel.__name__

@@ -165,11 +165,41 @@ class RoleConfig:
 
     @classmethod
     def from_env(cls, role: Role) -> "RoleConfig":
-        """Read `{ROLE}_PRIMARY` and `{ROLE}_FALLBACK` from env."""
+        """Read `{ROLE}_PRIMARY` and `{ROLE}_FALLBACK` from env.
+
+        Optional overrides (per role):
+          {ROLE}_MODEL_ID             — overrides the primary's model_id
+          {ROLE}_API_KEY              — overrides the primary's api_key
+          {ROLE}_FALLBACK_MODEL_ID    — overrides the fallback's model_id
+          {ROLE}_FALLBACK_API_KEY     — overrides the fallback's api_key
+
+        The api_key override lets two roles share one provider (e.g.,
+        both Featherless) but use independent API keys — each key has
+        its own concurrency quota and throttle state, so the orchestrator
+        and expert can run in parallel without throttling each other.
+        """
+        from dataclasses import replace
+
         prefix = role.value.upper()
         primary_name = os.getenv(f"{prefix}_PRIMARY")
         fallback_name = os.getenv(f"{prefix}_FALLBACK")
 
         primary = LLMSettings.from_env(primary_name)  # falls back to LLM_PROVIDER default
-        fallback = LLMSettings.from_env(fallback_name) if fallback_name else None
+        primary_model_override = os.getenv(f"{prefix}_MODEL_ID")
+        if primary_model_override:
+            primary = replace(primary, model_id=primary_model_override)
+        primary_key_override = os.getenv(f"{prefix}_API_KEY")
+        if primary_key_override:
+            primary = replace(primary, api_key=primary_key_override)
+
+        fallback = None
+        if fallback_name:
+            fallback = LLMSettings.from_env(fallback_name)
+            fallback_model_override = os.getenv(f"{prefix}_FALLBACK_MODEL_ID")
+            if fallback_model_override:
+                fallback = replace(fallback, model_id=fallback_model_override)
+            fallback_key_override = os.getenv(f"{prefix}_FALLBACK_API_KEY")
+            if fallback_key_override:
+                fallback = replace(fallback, api_key=fallback_key_override)
+
         return cls(role=role, primary=primary, fallback=fallback)

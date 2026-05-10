@@ -3,17 +3,24 @@
 Two layers:
 
 `build_bundle()` returns deterministic dependencies (enforcer, local tools,
-system prompt). No LLM or DB dependency, so tests reach for this directly.
+system prompt). No LLM or DB dependency — tests reach for this directly.
 
-`orchestrator_agent(bundle, llm, patient_db_path)` is an async context manager:
+`orchestrator_agent(bundle, llm, patient_db_path, memory)` is an async
+context manager:
 - Opens in-process MCP clients for both the ML-models server and the
   patient-data server (backed by the session SQLite DB).
 - Discovers tools from both MCP sessions.
+- Wires the MARGE protocol Requirement (final_answer gating + ordering).
 - Yields a fully wired `RequirementAgent`.
 - Closes both MCP sessions on exit.
 
+Memory: the caller may pass a `BaseMemory` instance to persist conversation
+history across user turns (Streamlit reuses one per session). Defaults to
+fresh `UnconstrainedMemory` when omitted.
+
 Usage:
-    async with orchestrator_agent(bundle, llm, patient_db_path=db) as agent:
+    async with orchestrator_agent(bundle, llm, patient_db_path=db,
+                                   memory=session_memory) as agent:
         result = await agent.run("Analyse patient csv-42.")
 """
 
@@ -23,17 +30,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
 from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
-from apps.orchestrator.tools.consult_expert import make_consult_expert
-from apps.orchestrator.tools.final_report import make_final_report
-from services.medical_expert_agent.agent import (
-    MedicalExpert,
-    build_medical_expert_agent,
+from apps.orchestrator.requirements.marge_protocol import (
+    build_marge_protocol_requirement,
 )
-from services.patient_data_mcp_server.sources._base import PatientSource
+from apps.orchestrator.tools.abstain import make_abstain
+from apps.orchestrator.tools.clinical_report import make_clinical_report
+from apps.orchestrator.tools.consult_expert import make_consult_expert
+from apps.orchestrator.tools.request_more_info import make_request_more_info
+from services.medical_expert_agent.agent import StubMedicalExpert
 
 if TYPE_CHECKING:
     from beeai_framework.agents.requirement import RequirementAgent
     from beeai_framework.backend.chat import ChatModel
+    from beeai_framework.memory.base_memory import BaseMemory
 
 _SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
 
@@ -47,18 +56,23 @@ class OrchestratorBundle:
     local_tools: dict[str, object]
 
 
-def build_bundle(
-    patient_source: PatientSource | None = None,
-    expert: MedicalExpert | None = None,
-) -> OrchestratorBundle:
-    """Build the orchestrator's deterministic dependencies."""
-    _ = patient_source
+def build_bundle(expert=None) -> OrchestratorBundle:
+    """Build the orchestrator's deterministic dependencies.
+
+    Args:
+        expert: Optional MedicalExpert implementation. Defaults to
+            `StubMedicalExpert` (deterministic test stub). Production
+            use should pass the live BeeAI sub-agent expert.
+    """
     enforcer = ProtocolEnforcer()
-    expert = expert or build_medical_expert_agent()
+    if expert is None:
+        expert = StubMedicalExpert()
 
     local_tools = {
         "consult_medical_expert": make_consult_expert(expert, enforcer),
-        "final_report": make_final_report(enforcer),
+        "request_more_info": make_request_more_info(enforcer),
+        "clinical_report": make_clinical_report(enforcer),
+        "abstain": make_abstain(enforcer),
     }
 
     return OrchestratorBundle(
@@ -73,18 +87,21 @@ async def orchestrator_agent(
     bundle: OrchestratorBundle,
     llm: "ChatModel",
     patient_db_path: Path | None = None,
+    memory: "BaseMemory | None" = None,
 ) -> AsyncIterator["RequirementAgent"]:
     """Build and yield a fully wired RequirementAgent.
 
     Opens in-process MCP sessions for the ML server and the patient-data
-    server. Both sessions stay alive for the duration of agent.run(); closing
-    either early causes MCPTool to raise ToolError.
+    server. Both sessions stay alive for the duration of agent.run() —
+    closing either early causes MCPTool to raise ToolError.
 
     Args:
         bundle: Deterministic dependencies from `build_bundle()`.
         llm: Chat model instance.
         patient_db_path: Path to the session SQLite DB. If None, the patient
-            MCP server is not attached (ML-only mode; patient tools unavailable).
+            MCP server is not attached (ML-only mode).
+        memory: Optional `BaseMemory` to persist conversation across turns.
+            Defaults to a fresh `UnconstrainedMemory`.
     """
     from beeai_framework.agents.requirement import RequirementAgent
     from beeai_framework.memory import UnconstrainedMemory
@@ -98,58 +115,53 @@ async def orchestrator_agent(
     local_tools = local_tools_as_beeai(bundle)
     ml_server = build_server()
 
-    # Hook the enforcer onto MCP tools only. Local tools already record
-    # themselves via the factory closures (test-covered). ML predictions go
-    # through MCP, so without this hook the finalize gate would never see a
-    # `predict_*` call and would incorrectly block final_report.
+    if memory is None:
+        memory = UnconstrainedMemory()
+
     def _make_recorder(tool_name: str):
         def _record(data, event) -> None:
-            # Fire only on the start event for each tool; using "*" so it
-            # matches across BeeAI's emitter namespacing.
             if getattr(event, "name", None) == "start":
                 bundle.enforcer.record(tool_name)
-
         return _record
 
     async with Client(ml_server) as ml_client:
         ml_tools = await MCPTool.from_client(ml_client.session)
-        for tool in ml_tools:
-            tool.emitter.match("*", _make_recorder(tool.name))
-
-        common_kwargs = {
-            "llm": llm,
-            "memory": UnconstrainedMemory(),
-            # BeeAI ConditionalRequirements are temporarily disabled. The
-            # orchestrator prompt still describes the preferred clinical flow,
-            # but final_report remains available for missing-info and
-            # information-only answers that cannot run ML safely.
-            "requirements": [],
-            "name": "MARGE Orchestrator",
-            "instructions": bundle.system_prompt,
-            "final_answer_as_tool": False,
-        }
+        for t in ml_tools:
+            t.emitter.match("*", _make_recorder(t.name))
 
         if patient_db_path is not None:
             patient_server = build_patient_server(patient_db_path)
             async with Client(patient_server) as patient_client:
                 patient_tools = await MCPTool.from_client(patient_client.session)
-                for tool in patient_tools:
-                    tool.emitter.match("*", _make_recorder(tool.name))
+                for t in patient_tools:
+                    t.emitter.match("*", _make_recorder(t.name))
 
-                yield RequirementAgent(
-                    **common_kwargs,
+                agent = RequirementAgent(
+                    llm=llm,
+                    memory=memory,
                     tools=[*local_tools, *ml_tools, *patient_tools],
+                    requirements=[build_marge_protocol_requirement()],
+                    name="MARGE Orchestrator",
                     description=(
                         "Clinical ML head researcher: orchestrates ML tools, "
                         "manages patient data, and consults a medical expert."
                     ),
+                    instructions=bundle.system_prompt,
+                    final_answer_as_tool=False,
                 )
+                yield agent
         else:
-            yield RequirementAgent(
-                **common_kwargs,
+            agent = RequirementAgent(
+                llm=llm,
+                memory=memory,
                 tools=[*local_tools, *ml_tools],
+                requirements=[build_marge_protocol_requirement()],
+                name="MARGE Orchestrator",
                 description=(
-                    "Clinical ML head researcher: orchestrates ML tools and "
-                    "consults a medical expert."
+                    "Clinical ML head researcher: orchestrates ML tools "
+                    "and consults a medical expert."
                 ),
+                instructions=bundle.system_prompt,
+                final_answer_as_tool=False,
             )
+            yield agent
