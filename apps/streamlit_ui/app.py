@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 SESSIONS_DIR = ROOT / "sessions"
-CHAT_LOG_PATH = ROOT / "logs" / "streamlit_chat.jsonl"
+LOGS_DIR = ROOT / "logs"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -210,7 +210,7 @@ def render_request_more_info_card(payload: dict) -> None:
 
 def _terminal_payload_from_events(events: list[dict]) -> tuple[str | None, dict | None]:
     """Find the last terminal tool call in this turn's events; return (name, input)."""
-    terminals = {"clinical_report", "abstain", "request_more_info"}
+    terminals = {"clinical_report", "abstain", "request_more_info", "conversational_reply"}
     for e in reversed(events):
         if e.get("kind") == "tool_call" and e.get("name") in terminals:
             # The structured payload may live on either tool_call or tool_output.
@@ -236,6 +236,11 @@ def render_terminal_card(events: list[dict]) -> None:
         render_abstain_card(payload)
     elif name == "request_more_info":
         render_request_more_info_card(payload)
+    elif name == "conversational_reply":
+        # Just a normal chat bubble — render the text inline.
+        text = payload.get("text") or payload.get("reply") or ""
+        if text:
+            st.markdown(text)
 
 
 def render_report(text: str) -> None:
@@ -285,6 +290,15 @@ def render_report(text: str) -> None:
 # Chat log
 # ---------------------------------------------------------------------------
 
+def _chat_log_path_for_session(session_id: str) -> Path:
+    """One JSONL file per chat session — appended to across all turns of that
+    session, but isolated from other sessions and prior runs.
+
+    File: logs/streamlit_chat_<session_id>.jsonl
+    """
+    return LOGS_DIR / f"streamlit_chat_{session_id}.jsonl"
+
+
 def _append_chat_log(
     session_id: str,
     patient_handle: str,
@@ -294,12 +308,13 @@ def _append_chat_log(
     error: str | None = None,
     events: list[dict] | None = None,
 ) -> None:
-    """Append a turn record to the JSONL chat log.
+    """Append a turn record to this session's JSONL chat log.
 
     `events` is a structured trace of everything that happened during the
     turn (LLM reasoning text, tool calls, tool outputs) for debug / replay.
     """
-    CHAT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    log_path = _chat_log_path_for_session(session_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
@@ -310,7 +325,7 @@ def _append_chat_log(
         "events": events or [],
         "error": error,
     }
-    with CHAT_LOG_PATH.open("a", encoding="utf-8") as f:
+    with log_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
 

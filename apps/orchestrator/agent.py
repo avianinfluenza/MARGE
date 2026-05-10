@@ -36,6 +36,7 @@ from apps.orchestrator.requirements.marge_protocol import (
 from apps.orchestrator.tools.abstain import make_abstain
 from apps.orchestrator.tools.clinical_report import make_clinical_report
 from apps.orchestrator.tools.consult_expert import make_consult_expert
+from apps.orchestrator.tools.conversational_reply import make_conversational_reply
 from apps.orchestrator.tools.request_more_info import make_request_more_info
 from apps.orchestrator.tools.update_user import make_update_user
 from services.medical_expert_agent.agent import StubMedicalExpert
@@ -71,6 +72,7 @@ def build_bundle(expert=None) -> OrchestratorBundle:
 
     local_tools = {
         "update_user": make_update_user(enforcer),
+        "conversational_reply": make_conversational_reply(enforcer),
         "consult_medical_expert": make_consult_expert(expert, enforcer),
         "request_more_info": make_request_more_info(enforcer),
         "clinical_report": make_clinical_report(enforcer),

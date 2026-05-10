@@ -11,6 +11,7 @@ from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
 
 _EXPECTED_LOCAL_TOOLS = {
     "update_user",
+    "conversational_reply",
     "consult_medical_expert",
     "request_more_info",
     "clinical_report",
@@ -27,7 +28,7 @@ class TestBuildBundle:
         bundle = build_bundle()
         assert isinstance(bundle.enforcer, ProtocolEnforcer)
 
-    def test_bundle_has_five_local_tools(self):
+    def test_bundle_has_six_local_tools(self):
         bundle = build_bundle()
         assert set(bundle.local_tools.keys()) == _EXPECTED_LOCAL_TOOLS
 

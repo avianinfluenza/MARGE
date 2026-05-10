@@ -62,7 +62,9 @@ def has_consulted_expert(state: Any) -> bool:
 class MARGEProtocolRequirement(Requirement):
     """Single Requirement encoding the four MARGE protocol rules (A–E above)."""
 
-    TERMINALS = frozenset({"clinical_report", "abstain", "request_more_info"})
+    TERMINALS = frozenset(
+        {"clinical_report", "abstain", "request_more_info", "conversational_reply"}
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -136,7 +138,7 @@ class MARGEProtocolRequirement(Requirement):
                         "expert at least once."
                     )
                 )
-            else:  # request_more_info — free
+            else:  # request_more_info / conversational_reply — free
                 allowed = True
                 reason = None
 

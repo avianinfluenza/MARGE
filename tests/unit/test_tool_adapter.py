@@ -40,16 +40,17 @@ class TestToBeeaiTool:
 class TestLocalToolsAsBeeai:
     EXPECTED = {
         "update_user",
+        "conversational_reply",
         "consult_medical_expert",
         "request_more_info",
         "clinical_report",
         "abstain",
     }
 
-    def test_returns_five_tools(self):
+    def test_returns_six_tools(self):
         bundle = build_bundle()
         tools = local_tools_as_beeai(bundle)
-        assert len(tools) == 5
+        assert len(tools) == 6
 
     def test_tool_names_match_expected_set(self):
         bundle = build_bundle()
