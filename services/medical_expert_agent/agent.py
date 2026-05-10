@@ -93,6 +93,7 @@ class MedicalExpertAgent:
         web_search: Callable[[str, int], list[RetrievedDocument]] | None = None,
         enable_web_search: bool = True,
         max_web_results: int = 3,
+        max_web_search_calls_per_turn: int = 1,
     ) -> None:
         from beeai_framework.memory import UnconstrainedMemory
 
@@ -103,14 +104,21 @@ class MedicalExpertAgent:
         self._web_search = web_search
         self._enable_web_search = enable_web_search
         self._max_web_results = max_web_results
+        self._max_web_search_calls_per_turn = max(0, max_web_search_calls_per_turn)
+        self._web_search_calls_this_turn = 0
+        self._turn_limit_active = False
 
     @classmethod
     def from_env(cls) -> "MedicalExpertAgent":
         """Build with the LLM configured for `Role.MEDICAL_EXPERT` in .env."""
         from packages.llm_provider.client import build_chat_model_for_role
         from packages.llm_provider.settings import Role
+        from services.medical_expert_agent.tools.search_web import medical_web_max_results
 
-        return cls(llm=build_chat_model_for_role(Role.MEDICAL_EXPERT))
+        return cls(
+            llm=build_chat_model_for_role(Role.MEDICAL_EXPERT),
+            max_web_results=medical_web_max_results(),
+        )
 
     @property
     def llm(self) -> "ChatModel":
@@ -122,6 +130,9 @@ class MedicalExpertAgent:
         """Attach a per-turn trace sink for expert-internal events."""
 
         self._event_sink = sink
+        self._turn_limit_active = sink is not None
+        if sink is not None:
+            self._web_search_calls_this_turn = 0
 
     def _emit_event(self, event: dict[str, Any]) -> None:
         if self._event_sink is None:
@@ -227,6 +238,39 @@ class MedicalExpertAgent:
                 continue
             citations.append(Citation(document=doc, supporting_quote=doc.snippet or None))
         return citations
+
+    async def _search_medical_web_once_per_turn(
+        self,
+        query: str,
+        max_results: int = 3,
+    ) -> dict[str, Any]:
+        from services.medical_expert_agent.tools.search_web import (
+            _medical_web_include_domains,
+            search_medical_web,
+        )
+
+        if self._web_search_calls_this_turn >= self._max_web_search_calls_per_turn:
+            return {
+                "query": query,
+                "max_results": 0,
+                "include_domains": _medical_web_include_domains(),
+                "documents": [],
+                "warning": (
+                    "search_medical_web is limited to one actual web search per "
+                    "user turn; this additional query was not executed."
+                ),
+                "skipped_due_to_turn_limit": True,
+                "calls_used_this_turn": self._web_search_calls_this_turn,
+                "max_calls_per_turn": self._max_web_search_calls_per_turn,
+            }
+
+        self._web_search_calls_this_turn += 1
+        result = await search_medical_web(query=query, max_results=max_results)
+        if isinstance(result, dict):
+            result.setdefault("skipped_due_to_turn_limit", False)
+            result["calls_used_this_turn"] = self._web_search_calls_this_turn
+            result["max_calls_per_turn"] = self._max_web_search_calls_per_turn
+        return result
 
     def _wire_tool_logging(
         self,
@@ -342,10 +386,14 @@ class MedicalExpertAgent:
         user_msg = f"{question}{self._format_findings(findings)}"
         citations: list[Citation] = []
         seen_citations: set[str] = set()
+        if not self._turn_limit_active:
+            self._web_search_calls_this_turn = 0
 
         from services.medical_expert_agent.tools._adapter import expert_tools_as_beeai
 
-        tools = expert_tools_as_beeai()
+        tools = expert_tools_as_beeai(
+            {"search_medical_web": self._search_medical_web_once_per_turn}
+        )
         self._wire_tool_logging(tools, citations, seen_citations)
 
         agent = RequirementAgent(

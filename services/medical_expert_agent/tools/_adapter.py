@@ -53,10 +53,12 @@ def to_beeai_tool(
     return decorator(output_wrapped)
 
 
-def expert_tools_as_beeai() -> list["Tool"]:
+def expert_tools_as_beeai(
+    overrides: dict[str, Callable[..., Any]] | None = None,
+) -> list["Tool"]:
     tools: list[Tool] = []
     for mod in EXPERT_TOOL_MODULES:
-        impl = getattr(mod, mod.TOOL_NAME)
+        impl = overrides.get(mod.TOOL_NAME) if overrides else getattr(mod, mod.TOOL_NAME)
         tools.append(
             to_beeai_tool(
                 impl,

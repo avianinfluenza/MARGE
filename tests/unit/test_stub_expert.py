@@ -122,6 +122,41 @@ class TestMedicalExpertAgent:
         assert "retrieved_context" in llm.messages[1].text
         assert response.citations[0].document.title == "CDC diabetes testing"
 
+    @pytest.mark.asyncio
+    async def test_live_web_search_is_limited_to_one_actual_call_per_turn(self, monkeypatch):
+        llm = _FakeLLM('{"reasoning":"ok","citations":[]}')
+        calls = []
+
+        async def fake_search_medical_web(query: str, max_results: int):
+            calls.append((query, max_results))
+            return {
+                "query": query,
+                "include_domains": ["medlineplus.gov"],
+                "documents": [],
+                "warning": None,
+            }
+
+        monkeypatch.setattr(
+            "services.medical_expert_agent.tools.search_web.search_medical_web",
+            fake_search_medical_web,
+        )
+        expert = MedicalExpertAgent(llm, system_prompt="expert system")
+        expert.set_event_sink(lambda event: None)
+
+        first = await expert._search_medical_web_once_per_turn("first query", 3)
+        second = await expert._search_medical_web_once_per_turn("second query", 3)
+
+        assert calls == [("first query", 3)]
+        assert first["skipped_due_to_turn_limit"] is False
+        assert second["skipped_due_to_turn_limit"] is True
+        assert "not executed" in second["warning"]
+
+        expert.set_event_sink(lambda event: None)
+        third = await expert._search_medical_web_once_per_turn("next turn query", 2)
+
+        assert calls == [("first query", 3), ("next turn query", 2)]
+        assert third["skipped_due_to_turn_limit"] is False
+
     def test_builds_stub_when_no_expert_env_is_configured(self, monkeypatch):
         monkeypatch.delenv("MEDICAL_EXPERT_PRIMARY", raising=False)
         monkeypatch.delenv("LLM_PROVIDER", raising=False)
