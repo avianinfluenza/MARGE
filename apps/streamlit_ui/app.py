@@ -49,7 +49,7 @@ def _get_or_create_session_db() -> Path:
 def _reset_session() -> None:
     for key in (
         "session_id", "patients", "current_patient", "messages",
-        "csv_file_id", "orch_memory",
+        "csv_file_id", "orch_memory", "expert",
     ):
         st.session_state.pop(key, None)
 
@@ -385,6 +385,21 @@ def _get_or_create_orch_memory():
     return st.session_state["orch_memory"]
 
 
+def _get_or_create_expert():
+    """Persist the real MedicalExpertAgent across user turns.
+
+    The expert has its own LLM (Role.MEDICAL_EXPERT — Featherless Kimi K2.5
+    by default) and its own conversation memory, separate from the
+    orchestrator's. The orchestrator passes findings as clinical values;
+    the expert reasons in clinical terms. Same instance is reused so the
+    expert remembers prior consultations within a session.
+    """
+    if "expert" not in st.session_state:
+        from services.medical_expert_agent.agent import MedicalExpertAgent
+        st.session_state["expert"] = MedicalExpertAgent.from_env()
+    return st.session_state["expert"]
+
+
 def stream_analysis(
     user_message: str,
     patient_handle: str | None,
@@ -408,6 +423,12 @@ def stream_analysis(
     state.setdefault("events", [])
     events: list[dict] = state["events"]
 
+    # Capture the per-session memory and expert in the main Streamlit thread
+    # before launching the worker thread (st.session_state access from the
+    # worker thread is unreliable).
+    orch_memory = _get_or_create_orch_memory()
+    expert = _get_or_create_expert()
+
     async def _run() -> None:
         if patient_handle:
             prompt = (
@@ -423,7 +444,7 @@ def stream_analysis(
             patient_db_path = None
 
         llm = build_chat_model_for_role(Role.ORCHESTRATOR)
-        bundle = build_bundle()
+        bundle = build_bundle(expert=expert)
 
         # Hook 1: enforcer record (existing behaviour) — also queue tool name
         _orig_record = bundle.enforcer.record
@@ -445,10 +466,9 @@ def stream_analysis(
         except Exception:
             pass  # if emitter API differs, silently skip — tool streaming still works
 
-        memory = _get_or_create_orch_memory()
         try:
             async with orchestrator_agent(
-                bundle=bundle, llm=llm, patient_db_path=patient_db_path, memory=memory,
+                bundle=bundle, llm=llm, patient_db_path=patient_db_path, memory=orch_memory,
             ) as agent:
                 # Hook 3: per-tool start/success/error (input + output capture)
                 for tool in agent._tools:

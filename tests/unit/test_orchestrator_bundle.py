@@ -5,6 +5,8 @@ request_more_info, clinical_report, abstain) and the protocol enforcer.
 Patient data and ML tools are attached via MCP at runtime and are not tested here.
 """
 
+import pytest
+
 from apps.orchestrator.agent import OrchestratorBundle, build_bundle
 from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
 
@@ -32,9 +34,10 @@ class TestBuildBundle:
         bundle = build_bundle()
         assert set(bundle.local_tools.keys()) == _EXPECTED_LOCAL_TOOLS
 
-    def test_bundle_local_tools_share_one_enforcer(self):
+    @pytest.mark.asyncio
+    async def test_bundle_local_tools_share_one_enforcer(self):
         bundle = build_bundle()
-        bundle.local_tools["consult_medical_expert"](question="?", findings={})
+        await bundle.local_tools["consult_medical_expert"](question="?", findings={})
         assert bundle.enforcer.has_called("consult_medical_expert")
 
     def test_system_prompt_loaded(self):

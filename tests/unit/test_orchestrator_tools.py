@@ -12,6 +12,8 @@ test_marge_requirement.py). The tool factories themselves only record
 the call into the enforcer for trajectory logging.
 """
 
+import pytest
+
 from apps.orchestrator.middleware.enforce_protocol import ProtocolEnforcer
 from apps.orchestrator.tools.abstain import make_abstain
 from apps.orchestrator.tools.clinical_report import make_clinical_report
@@ -37,16 +39,18 @@ class TestUpdateUserTool:
 
 
 class TestConsultExpertTool:
-    def test_returns_medical_expert_response(self):
+    @pytest.mark.asyncio
+    async def test_returns_medical_expert_response(self):
         enforcer = ProtocolEnforcer()
         consult = make_consult_expert(StubMedicalExpert(), enforcer)
-        response = consult(question="What does this suggest?", findings={"a": 1})
+        response = await consult(question="What does this suggest?", findings={"a": 1})
         assert isinstance(response, MedicalExpertResponse)
 
-    def test_records_consult_medical_expert_call(self):
+    @pytest.mark.asyncio
+    async def test_records_consult_medical_expert_call(self):
         enforcer = ProtocolEnforcer()
         consult = make_consult_expert(StubMedicalExpert(), enforcer)
-        consult(question="?", findings={})
+        await consult(question="?", findings={})
         assert enforcer.has_called("consult_medical_expert")
 
 

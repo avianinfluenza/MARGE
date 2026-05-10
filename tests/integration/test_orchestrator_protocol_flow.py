@@ -5,7 +5,9 @@ the ProtocolEnforcer). Verifies that the trajectory ends up with the
 correct shape for each scenario.
 
 The actual gate enforcement is now LLM-side via `MARGEProtocolRequirement`;
-the enforcer's role here is trajectory recording for logs/UI.
+the enforcer's role here is trajectory recording for logs/UI. The
+`consult_medical_expert` tool factory is async (so it can await a real
+LLM-backed expert), so these tests are async too.
 """
 
 import pytest
@@ -32,11 +34,12 @@ def deps():
     }
 
 
-def test_happy_path_expert_then_ml_then_report(deps):
+@pytest.mark.asyncio
+async def test_happy_path_expert_then_ml_then_report(deps):
     deps["update"](text="Hi! Let me check…")
-    deps["consult"](question="Differential for given symptoms?", findings={"sx": "polydipsia"})
+    await deps["consult"](question="Differential for given symptoms?", findings={"sx": "polydipsia"})
     deps["enforcer"].record("predict_diabetes_risk")  # ML simulated
-    deps["consult"](question="ML score interpretation?", findings={"score": 0.85})
+    await deps["consult"](question="ML score interpretation?", findings={"score": 0.85})
     deps["report"](
         summary="High diabetes risk.",
         recommendation="Refer to PCP.",
@@ -52,8 +55,9 @@ def test_happy_path_expert_then_ml_then_report(deps):
     )
 
 
-def test_scope_mismatch_path_ends_in_abstain(deps):
-    deps["consult"](question="Differential for headache + fatigue", findings={})
+@pytest.mark.asyncio
+async def test_scope_mismatch_path_ends_in_abstain(deps):
+    await deps["consult"](question="Differential for headache + fatigue", findings={})
     deps["update"](text="No good ML scope here.")
     deps["abstain"](reason="No relevant ML predictor for these symptoms.")
 
@@ -62,7 +66,8 @@ def test_scope_mismatch_path_ends_in_abstain(deps):
     assert "consult_medical_expert" in traj
 
 
-def test_request_more_info_path_terminates_without_ml(deps):
+@pytest.mark.asyncio
+async def test_request_more_info_path_terminates_without_ml(deps):
     deps["update"](text="Got it. Let me ask for some specifics.")
     deps["request"](
         needed=[{"name": "HbA1c", "why": "confirm diabetes range"}],
@@ -73,10 +78,11 @@ def test_request_more_info_path_terminates_without_ml(deps):
     assert traj == ("update_user", "request_more_info")
 
 
-def test_multiple_update_user_calls_within_one_turn(deps):
+@pytest.mark.asyncio
+async def test_multiple_update_user_calls_within_one_turn(deps):
     deps["update"](text="One.")
     deps["update"](text="Two.")
-    deps["consult"](question="?", findings={})
+    await deps["consult"](question="?", findings={})
     deps["update"](text="Three.")
     deps["request"](needed=[], rationale="x")
 

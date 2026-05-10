@@ -61,15 +61,22 @@ def to_beeai_tool(
 ) -> "Tool":
     """Wrap a Python callable + Pydantic input schema as a BeeAI Tool.
 
-    The wrapped callable must accept the same parameter names as the schema
-    fields (BeeAI introspects the signature). Its return value is coerced
-    to `JSONToolOutput`.
+    Sync and async callables are both supported. Returns are coerced to
+    `JSONToolOutput`.
     """
+    import inspect as _inspect
+
     from beeai_framework.tools import tool
 
-    @functools.wraps(fn)
-    def output_wrapped(*args: Any, **kwargs: Any) -> Any:
-        return _to_tool_output(fn(*args, **kwargs))
+    if _inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def output_wrapped(*args: Any, **kwargs: Any) -> Any:
+            result = await fn(*args, **kwargs)
+            return _to_tool_output(result)
+    else:
+        @functools.wraps(fn)
+        def output_wrapped(*args: Any, **kwargs: Any) -> Any:
+            return _to_tool_output(fn(*args, **kwargs))
 
     decorator = tool(name=name, description=description, input_schema=input_schema)
     return decorator(output_wrapped)
