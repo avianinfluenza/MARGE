@@ -341,12 +341,43 @@ def _result_text(result: Any) -> str:
     structured = getattr(result, "output_structured", None)
     text = getattr(structured, "response", None)
     if text:
-        return text
+        return _strip_transport_sentinel(text)
     answer = getattr(result, "answer", None)
     text = getattr(answer, "text", None)
     if text:
-        return text
-    return str(result)
+        return _strip_transport_sentinel(text)
+    return _strip_transport_sentinel(str(result))
+
+
+def _strip_transport_sentinel(text: str) -> str:
+    """Remove the final-answer transport marker used to absorb dropped tokens."""
+    text = text.lstrip()
+    # Some OpenAI-compatible providers drop the first token(s) from the hidden
+    # final-answer tool input. The prompt repeats the marker so any truncation
+    # should consume marker text instead of the real first word.
+    # Occasionally the provider also prepends a tiny stray markdown fragment
+    # (for example "# 8") before the marker. If a marker appears near the
+    # beginning, discard everything through the final repeated marker.
+    prefix = text[:240]
+    marker_matches = list(
+        re.finditer(r"(?:MARGE[\s_-]*START|START)\b[\s:;,.!?\-]*", prefix, re.IGNORECASE)
+    )
+    if marker_matches:
+        text = text[marker_matches[-1].end():].lstrip()
+
+    text = re.sub(
+        r"^(?:[A-Z_]*MARGE[\s_-]*START|[A-Z_]*START)\b[\s:;,.!?\-]*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).lstrip()
+    text = re.sub(
+        r"^(?:(?:MARGE[\s_-]*START|START)\b[\s:;,.!?\-]*)+",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).lstrip()
+    return text
 
 
 def _role_label(role: Role) -> str:
@@ -518,12 +549,12 @@ def stream_analysis(
     db_path: Path,
     state: dict,
 ) -> Any:
-    """Generator for st.write_stream that streams LLM tokens + tool events live.
+    """Generator that streams tool events live and emits final text at completion.
 
     Yields, in real time:
-    - LLM reasoning text (token by token from `new_token` emitter event)
     - Tool call markers ("🔧 `tool_name`(...args)") on each tool start
     - Tool output snippets on each tool success/error
+    - Final assistant response after the agent run completes
 
     Populates `state` with:
     - 'response': final user-facing text
@@ -573,18 +604,11 @@ def stream_analysis(
         if hasattr(expert, "set_event_sink"):
             expert.set_event_sink(lambda event: eq.put(("expert_event", event)))
 
-        # Hook 2: LLM token streaming
-        def _on_llm_event(data: Any, event: Any) -> None:
-            if getattr(event, "name", "") != "new_token":
-                return
-            chunk = _extract_token_text(data)
-            if chunk:
-                eq.put(("token", chunk))
-
-        try:
-            llm.emitter.match("*", _on_llm_event)
-        except Exception:
-            pass  # if emitter API differs, silently skip — tool streaming still works
+        # Do not attach LLM token streaming here. Some OpenAI-compatible
+        # backends emit `new_token` chunks without the first generated token
+        # when BeeAI/provider streaming is involved, which makes the UI render
+        # replies like "there!" instead of "Hi there!". Tool emitters still
+        # stream progress; the user-facing answer comes from the completed run.
 
         try:
             async with orchestrator_agent(
@@ -646,7 +670,12 @@ def stream_analysis(
                     except Exception:
                         pass
 
-                result = await agent.run(prompt, stream=True)
+                # BeeAI/provider streaming currently drops the first generated
+                # text chunk for some OpenAI-compatible backends, which makes
+                # replies start mid-sentence ("there!" instead of "Hi there!").
+                # Run non-streaming for the final assistant text; tool events
+                # are still emitted through tool emitters above.
+                result = await agent.run(prompt, stream=False)
             state["response"] = _result_text(result)
             state["trajectory"] = list(bundle.enforcer.trajectory)
         except Exception as exc:
@@ -684,13 +713,6 @@ def stream_analysis(
         return repr(obj)[:500]
 
     def _generator():
-        # Streamlit's st.write_stream consumes the first yielded chunk for
-        # type detection — empty strings are silently dropped so the actual
-        # first character of the reply still ends up being the probe target.
-        # Yield a zero-width space (real char, invisible) so detection runs
-        # on it instead of on the user-visible content.
-        yield "​"
-        streamed_text_chars = 0
         while True:
             item = eq.get(timeout=300)
             if item is None:
@@ -698,8 +720,7 @@ def stream_analysis(
             kind, payload = item
             if kind == "token":
                 events.append({"kind": "reasoning_token", "text": payload})
-                streamed_text_chars += len(payload)
-                yield payload  # typewriter effect
+                continue
             elif kind == "tool_call":
                 events.append({"kind": "tool_call", **_to_jsonable(payload)})
                 yield (
@@ -732,12 +753,8 @@ def stream_analysis(
                 elif event.get("kind") == "tool_output" and not event.get("success", True):
                     err = event.get("error", "(unknown)")
                     yield f"\n\n  ❌ **{event.get('name')} failed:** `{err}`\n\n"
-        # Fallback: BeeAI's `new_token` emitter is silent on some OpenAI-compat
-        # providers (Featherless, etc.), so token streaming may produce nothing
-        # even on a successful run. If the stream emitted no chat text, render
-        # the captured final response so the user actually sees the reply.
         final = state.get("response") or ""
-        if streamed_text_chars == 0 and final:
+        if final:
             yield final
 
     return _generator()
@@ -832,7 +849,11 @@ def _app_main() -> None:
 
         with st.chat_message("assistant"):
             stream_state: dict = {"response": "", "trajectory": [], "error": None, "events": []}
-            st.write_stream(stream_analysis(user_input, current_patient, db_path, stream_state))
+            stream_box = st.empty()
+            streamed_text = ""
+            for chunk in stream_analysis(user_input, current_patient, db_path, stream_state):
+                streamed_text += str(chunk)
+                stream_box.markdown(streamed_text)
             # After the stream completes, render any structured terminal card
             render_terminal_card(stream_state.get("events", []))
             if stream_state.get("error"):
