@@ -217,7 +217,11 @@ def _terminal_payload_from_events(events: list[dict]) -> tuple[str | None, dict 
     """
     terminals = {"clinical_report", "abstain", "request_more_info"}
     for e in reversed(events):
-        if e.get("kind") == "tool_call" and e.get("name") in terminals:
+        if (
+            e.get("kind") == "tool_call"
+            and e.get("name") in terminals
+            and e.get("agent", "orchestrator") == "orchestrator"
+        ):
             # The structured payload may live on either tool_call or tool_output.
             inp = e.get("input")
             if inp:
@@ -402,6 +406,7 @@ def _get_or_create_expert():
 
 _TOOL_PROGRESS_FALLBACK = {
     "consult_medical_expert":      "🩺 Consulting the medical expert…",
+    "search_medical_web":          "🔎 Searching medical web sources…",
     "predict_diabetes_risk":       "📊 Running the diabetes risk model…",
     "predict_breast_cancer_malignancy": "📊 Running the breast-tumor malignancy model…",
     "get_patient":                 "📁 Fetching patient record…",
@@ -413,10 +418,13 @@ _TOOL_PROGRESS_FALLBACK = {
 }
 
 
-def _tool_progress_message(tool_name: str) -> str:
-    return _TOOL_PROGRESS_FALLBACK.get(
+def _tool_progress_message(tool_name: str, agent: str | None = None) -> str:
+    message = _TOOL_PROGRESS_FALLBACK.get(
         tool_name, f"🔧 **{tool_name}** _running…_"
     )
+    if agent == "expert":
+        return f"Expert tool: {message}"
+    return message
 
 
 def _log(kind: str, payload: Any) -> None:
@@ -483,7 +491,10 @@ def render_events_timeline(events: list[dict]) -> None:
                     json.dumps(inp, indent=2, ensure_ascii=False, default=str)
                     if inp else "(no input)"
                 )
-                st.markdown(f"**[{i:02d}] → call** `{payload.get('name')}`")
+                agent_name = payload.get("agent", "orchestrator")
+                st.markdown(
+                    f"**[{i:02d}] → call** `{agent_name}.{payload.get('name')}`"
+                )
                 st.code(inp_text, language="json")
             elif kind == "tool_output":
                 ok = payload.get("success", True)
@@ -494,7 +505,10 @@ def render_events_timeline(events: list[dict]) -> None:
                     if isinstance(pl, (dict, list))
                     else str(pl)
                 )
-                st.markdown(f"**[{i:02d}] ← return** `{payload.get('name')}` · _{tag}_")
+                agent_name = payload.get("agent", "orchestrator")
+                st.markdown(
+                    f"**[{i:02d}] ← return** `{agent_name}.{payload.get('name')}` · _{tag}_"
+                )
                 st.code(pl_text, language="json" if ok else "text")
 
 
@@ -550,8 +564,14 @@ def stream_analysis(
         _orig_record = bundle.enforcer.record
         def _streaming_record(tool_name: str) -> None:
             _orig_record(tool_name)
-            eq.put(("tool_call", {"name": tool_name, "input": None}))
+            eq.put((
+                "tool_call",
+                {"agent": "orchestrator", "name": tool_name, "input": None},
+            ))
         bundle.enforcer.record = _streaming_record
+
+        if hasattr(expert, "set_event_sink"):
+            expert.set_event_sink(lambda event: eq.put(("expert_event", event)))
 
         # Hook 2: LLM token streaming
         def _on_llm_event(data: Any, event: Any) -> None:
@@ -596,7 +616,8 @@ def stream_analysis(
                                                   "output": output_repr})
                                 eq.put((
                                     "tool_output",
-                                    {"name": tool_name, "input": pending.get("input"),
+                                    {"agent": "orchestrator", "name": tool_name,
+                                     "input": pending.get("input"),
                                      "output": output_repr, "success": True},
                                 ))
                                 pending.clear()
@@ -612,7 +633,8 @@ def stream_analysis(
                                 _log("tool_err", {"name": tool_name, "error": err_str})
                                 eq.put((
                                     "tool_output",
-                                    {"name": tool_name, "input": pending.get("input"),
+                                    {"agent": "orchestrator", "name": tool_name,
+                                     "input": pending.get("input"),
                                      "error": err_str, "success": False},
                                 ))
                                 pending.clear()
@@ -641,6 +663,8 @@ def stream_analysis(
             state["response"] = f"Run failed:\n```\n{state['error']}\n```"
             state["trajectory"] = list(bundle.enforcer.trajectory)
         finally:
+            if hasattr(expert, "set_event_sink"):
+                expert.set_event_sink(None)
             eq.put(None)
 
     threading.Thread(target=lambda: asyncio.run(_run()), daemon=True).start()
@@ -678,7 +702,10 @@ def stream_analysis(
                 yield payload  # typewriter effect
             elif kind == "tool_call":
                 events.append({"kind": "tool_call", **_to_jsonable(payload)})
-                yield f"\n\n{_tool_progress_message(payload['name'])}\n\n"
+                yield (
+                    f"\n\n{_tool_progress_message(payload['name'], payload.get('agent'))}"
+                    "\n\n"
+                )
             elif kind == "tool_output":
                 events.append({"kind": "tool_output", **_to_jsonable(payload)})
                 if payload.get("success"):
@@ -689,6 +716,22 @@ def stream_analysis(
                 else:
                     err = payload.get("error", "(unknown)")
                     yield f"\n\n  ❌ **{payload.get('name')} failed:** `{err}`\n\n"
+            elif kind == "expert_event":
+                event = _to_jsonable(payload)
+                events.append(event)
+                _log("expert_tool_event", event)
+                if event.get("kind") == "tool_call":
+                    yield (
+                        f"\n\n{_tool_progress_message(event['name'], event.get('agent'))}"
+                        "\n\n"
+                    )
+                elif event.get("kind") == "tool_output" and event.get("success", True):
+                    out_str = json.dumps(event.get("output"), ensure_ascii=False, default=str)
+                    snippet = (out_str[:200] + "…") if len(out_str) > 200 else out_str
+                    yield f"  ✓ `{snippet}`\n\n"
+                elif event.get("kind") == "tool_output" and not event.get("success", True):
+                    err = event.get("error", "(unknown)")
+                    yield f"\n\n  ❌ **{event.get('name')} failed:** `{err}`\n\n"
         # Fallback: BeeAI's `new_token` emitter is silent on some OpenAI-compat
         # providers (Featherless, etc.), so token streaming may produce nothing
         # even on a successful run. If the stream emitted no chat text, render

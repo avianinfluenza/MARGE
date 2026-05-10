@@ -77,7 +77,7 @@ def build_bundle(expert=None) -> OrchestratorBundle:
 
     return OrchestratorBundle(
         enforcer=enforcer,
-        system_prompt=_SYSTEM_PROMPT_PATH.read_text(),
+        system_prompt=_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8"),
         local_tools=local_tools,
     )
 
