@@ -9,7 +9,7 @@ from typing import Any
 from sklearn.datasets import load_breast_cancer
 
 # Assuming ml_agent_factory.py is in the same directory or accessible module
-from ._agent_factory import AgentConfig, DynamicMLAgent
+from services.ml_mcp_server.models._agent_factory import AgentConfig, DynamicMLAgent
 
 # --- 1. Load Dataset & Constants ---
 _DATASET = load_breast_cancer()

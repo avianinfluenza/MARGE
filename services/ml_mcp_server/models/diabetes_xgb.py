@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 # Assuming ml_agent_factory.py is accessible
-from ._agent_factory import AgentConfig, DynamicMLAgent
+from services.ml_mcp_server.models._agent_factory import AgentConfig, DynamicMLAgent
 
 # --- 1. Define Paths and Constants ---
 _ARTIFACT_PATH = Path(__file__).parent.parent / "artifacts" / "diabetes_dynamic.joblib"
